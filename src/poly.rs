@@ -1,8 +1,12 @@
-use std::ops::{Add, AddAssign, Mul, MulAssign, Sub, SubAssign};
-
-#[derive(Clone)]
+use super::utils::{sample_gaussian_vec, sample_uniform_vec};
+use std::{
+    clone,
+    ops::{Add, AddAssign, Mul, MulAssign, Neg, Sub, SubAssign},
+    sync::Arc,
+};
+#[derive(Clone, PartialEq)]
 pub struct Modulus {
-    q: u64,
+    pub q: u64,
 }
 
 impl Modulus {
@@ -26,25 +30,37 @@ impl Modulus {
 
         (a * b) % self.q
     }
+
+    fn neg(&self, a: u64) -> u64 {
+        debug_assert!(a <= self.q);
+        (self.q - a) % self.q
+    }
 }
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 pub struct Context {
     moduli: Modulus,
     degree: usize,
 }
 
+impl Context {
+    pub fn new(moduli: Modulus, degree: usize) -> Self {
+        Self { moduli, degree }
+    }
+}
+
+#[derive(Clone)]
 pub struct Poly {
     pub coeffs: Vec<u64>,
-    pub ctx: Context,
+    pub ctx: Arc<Context>,
 }
 
 // define operations
 impl Poly {
-    pub fn zero(ctx: Context) -> Self {
+    pub fn zero(ctx: &Arc<Context>) -> Self {
         Poly {
             coeffs: vec![0; ctx.degree],
-            ctx,
+            ctx: ctx.clone(),
         }
     }
 }
@@ -52,6 +68,7 @@ impl Poly {
 impl AddAssign<&Poly> for Poly {
     fn add_assign(&mut self, rhs: &Self) {
         debug_assert!(self.coeffs.len() == rhs.coeffs.len());
+        debug_assert!(self.ctx == rhs.ctx);
 
         self.coeffs
             .iter_mut()
@@ -72,6 +89,7 @@ impl Add for Poly {
 impl SubAssign<&Poly> for Poly {
     fn sub_assign(&mut self, rhs: &Poly) {
         debug_assert!(self.coeffs.len() == rhs.coeffs.len());
+        debug_assert!(self.ctx == rhs.ctx);
 
         self.coeffs
             .iter_mut()
@@ -89,12 +107,14 @@ impl Sub for Poly {
 }
 
 impl MulAssign<&Poly> for Poly {
+    /// Naive cross multiplication.
+    /// Context::degree must change
     fn mul_assign(&mut self, rhs: &Poly) {
         debug_assert!(self.coeffs.len() == rhs.coeffs.len());
+        debug_assert!(self.ctx == rhs.ctx);
 
-        let mut ctx_res = self.ctx.clone();
-        ctx_res.degree += rhs.ctx.degree;
-        let mut res = Poly::zero(ctx_res);
+        let ctx_res = Context::new(self.ctx.moduli.clone(), self.ctx.degree + rhs.ctx.degree);
+        let mut res = Poly::zero(&Arc::new(ctx_res));
         self.coeffs.iter().enumerate().for_each(|(i, a)| {
             rhs.coeffs.iter().enumerate().for_each(|(j, b)| {
                 res.coeffs[i + j] += res.ctx.moduli.mul_mod(*a, *b);
@@ -105,10 +125,85 @@ impl MulAssign<&Poly> for Poly {
     }
 }
 
+impl Mul<&Poly> for &Poly {
+    type Output = Poly;
+    fn mul(self, rhs: &Poly) -> Self::Output {
+        let mut res = self.clone();
+        res *= rhs;
+        res
+    }
+}
+
 impl Mul for Poly {
     type Output = Poly;
     fn mul(self, mut rhs: Poly) -> Self::Output {
         rhs *= &self;
         rhs
+    }
+}
+
+impl Neg for &Poly {
+    type Output = Poly;
+    fn neg(self) -> Self::Output {
+        Poly {
+            coeffs: self
+                .coeffs
+                .iter()
+                .map(|v| self.ctx.moduli.neg(*v))
+                .collect(),
+            ctx: self.ctx.clone(),
+        }
+    }
+}
+
+impl Neg for Poly {
+    type Output = Poly;
+    fn neg(self) -> Self::Output {
+        Poly {
+            coeffs: self
+                .coeffs
+                .iter()
+                .map(|v| self.ctx.moduli.neg(*v))
+                .collect(),
+            ctx: self.ctx.clone(),
+        }
+    }
+}
+
+impl Poly {
+    pub fn random_uniform(ctx: &Arc<Context>) -> Self {
+        let mut polynomial = Poly::zero(ctx);
+        polynomial
+            .coeffs
+            .as_mut_slice()
+            .copy_from_slice(&sample_uniform_vec(
+                polynomial.ctx.degree,
+                polynomial.ctx.moduli.q,
+            ));
+        polynomial
+    }
+
+    pub fn random_gaussian(ctx: &Arc<Context>, std_dev: f64) -> Self {
+        let mut polynomial = Poly::zero(ctx);
+        polynomial
+            .coeffs
+            .as_mut_slice()
+            .copy_from_slice(&Vec::<u64>::from_iter(
+                sample_gaussian_vec(polynomial.ctx.degree, std_dev)
+                    .into_iter()
+                    .map(|mut v| {
+                        if v < 0.0 {
+                            v += polynomial.ctx.moduli.q as f64;
+                        }
+
+                        (v as u64) % polynomial.ctx.moduli.q
+                    }),
+            ));
+        polynomial
+    }
+
+    pub fn switch_context(&mut self, ctx: &Arc<Context>) {
+        debug_assert!(self.ctx.moduli.q < ctx.moduli.q);
+        self.ctx = ctx.clone();
     }
 }
