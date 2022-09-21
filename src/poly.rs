@@ -1,7 +1,7 @@
 use super::utils::{sample_gaussian_vec, sample_uniform_vec};
 use std::{
     clone,
-    ops::{Add, AddAssign, Mul, MulAssign, Neg, Sub, SubAssign},
+    ops::{Add, AddAssign, Deref, Mul, MulAssign, Neg, Sub, SubAssign},
     sync::Arc,
 };
 #[derive(Clone, PartialEq)]
@@ -37,7 +37,7 @@ impl Modulus {
     }
 }
 
-#[derive(Clone, PartialEq)]
+#[derive(Clone)]
 pub struct Context {
     moduli: Modulus,
     degree: usize,
@@ -49,7 +49,17 @@ impl Context {
     }
 }
 
+impl PartialEq for Context {
+    fn eq(&self, other: &Self) -> bool {
+        if self.moduli != other.moduli || self.degree != other.degree {
+            return false;
+        }
+        true
+    }
+}
+
 #[derive(Clone)]
+/// Polynomial Ring: Rq = Zq[x] / (x^n + 1)
 pub struct Poly {
     pub coeffs: Vec<u64>,
     pub ctx: Arc<Context>,
@@ -67,7 +77,6 @@ impl Poly {
 
 impl AddAssign<&Poly> for Poly {
     fn add_assign(&mut self, rhs: &Self) {
-        debug_assert!(self.coeffs.len() == rhs.coeffs.len());
         debug_assert!(self.ctx == rhs.ctx);
 
         self.coeffs
@@ -107,19 +116,27 @@ impl Sub for Poly {
 }
 
 impl MulAssign<&Poly> for Poly {
-    /// Naive cross multiplication.
-    /// Context::degree must change
     fn mul_assign(&mut self, rhs: &Poly) {
-        debug_assert!(self.coeffs.len() == rhs.coeffs.len());
         debug_assert!(self.ctx == rhs.ctx);
 
-        let ctx_res = Context::new(self.ctx.moduli.clone(), self.ctx.degree + rhs.ctx.degree);
-        let mut res = Poly::zero(&Arc::new(ctx_res));
-        self.coeffs.iter().enumerate().for_each(|(i, a)| {
-            rhs.coeffs.iter().enumerate().for_each(|(j, b)| {
-                res.coeffs[i + j] += res.ctx.moduli.mul_mod(*a, *b);
-            })
-        });
+        let mut res = Poly::zero(&self.ctx);
+
+        for i in 0..res.ctx.degree {
+            for j in 0..i + 1 {
+                let tmp = res.ctx.moduli.mul_mod(self.coeffs[j], rhs.coeffs[i - j]);
+                res.coeffs[i] = res.ctx.moduli.add_mod(res.coeffs[i], tmp);
+            }
+
+            for j in i + 1..res.ctx.degree {
+                let tmp = res
+                    .ctx
+                    .moduli
+                    .mul_mod(self.coeffs[j], rhs.coeffs[res.ctx.degree + i - j]);
+                res.coeffs[i] = res.ctx.moduli.sub_mod(res.coeffs[i], tmp);
+            }
+
+            res.coeffs[i] %= res.ctx.moduli.q;
+        }
 
         *self = res;
     }
