@@ -1,10 +1,10 @@
 use super::utils::{sample_gaussian_vec, sample_uniform_vec};
 use std::{
     clone,
-    ops::{Add, AddAssign, Deref, Mul, MulAssign, Neg, Sub, SubAssign},
+    ops::{Add, AddAssign, Deref, Mul, MulAssign, Neg, Rem, Sub, SubAssign},
     sync::Arc,
 };
-#[derive(Clone, PartialEq)]
+#[derive(Clone, PartialEq, Debug)]
 pub struct Modulus {
     pub q: u64,
 }
@@ -35,12 +35,16 @@ impl Modulus {
         debug_assert!(a <= self.q);
         (self.q - a) % self.q
     }
+
+    pub fn convert(&self, a: u64) -> u64 {
+        a % self.q
+    }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct Context {
-    moduli: Modulus,
-    degree: usize,
+    pub moduli: Modulus,
+    pub degree: usize,
 }
 
 impl Context {
@@ -58,7 +62,7 @@ impl PartialEq for Context {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 /// Polynomial Ring: Rq = Zq[x] / (x^n + 1)
 pub struct Poly {
     pub coeffs: Vec<u64>,
@@ -83,6 +87,15 @@ impl AddAssign<&Poly> for Poly {
             .iter_mut()
             .zip(rhs.coeffs.iter())
             .for_each(|(a, b)| *a = self.ctx.moduli.add_mod(*a, *b));
+    }
+}
+
+impl Add<&Poly> for &Poly {
+    type Output = Poly;
+    fn add(self, rhs: &Poly) -> Self::Output {
+        let mut res = self.clone();
+        res += rhs;
+        res
     }
 }
 
