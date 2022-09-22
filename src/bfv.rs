@@ -15,14 +15,14 @@ pub struct BfvParameters {
 
 impl Default for BfvParameters {
     fn default() -> Self {
-        let q: u64 = 121313;
-        let degree: usize = 8;
-        let ctx = Context::new(Modulus { q: 121313 }, 8);
+        let q: u64 = 65536;
+        let degree: usize = 4;
+        let ctx = Context::new(Modulus { q }, degree);
         Self {
-            t: 128,
+            t: 4,
             q,
             n: degree,
-            st_dev: 3.3,
+            st_dev: 3.2,
             poly_ctx: Arc::new(ctx),
         }
     }
@@ -49,10 +49,9 @@ impl BfvSecretKey {
 
     pub fn decrypt(&self, ct: &BfvCipherText) -> Vec<u64> {
         let mut poly = &ct.c[1] * &self.poly + ct.c[0].clone();
-
-        // let t_mod = Modulus { q: self.params.t };
-        let delta_inv = self.params.t / self.params.q;
-        poly.coeffs.iter_mut().for_each(|c| *c *= delta_inv);
+        poly.coeffs
+            .iter_mut()
+            .for_each(|c| *c = ((*c * self.params.t) as f64 / self.params.q as f64).round() as u64);
 
         poly.coeffs
     }
@@ -85,14 +84,12 @@ impl BfvPublicKey {
         let e1 = Poly::random_gaussian(&self.params.poly_ctx, self.params.st_dev);
         let e2 = Poly::random_gaussian(&self.params.poly_ctx, self.params.st_dev);
 
-        // delta_m
-        // TODO: floor this
-        let delta = self.params.q / self.params.t;
+        let delta = (self.params.q as f64 / self.params.t as f64).floor() as u64;
         let mut m = Poly::zero(&self.params.poly_ctx);
         m.coeffs
             .iter_mut()
             .zip(plaintext.poly.coeffs.iter())
-            .for_each(|(sv, v)| *sv = delta * v);
+            .for_each(|(sv, v)| *sv = v * delta);
 
         // p0 * u + e1 + delta_m
         let c0 = &self.ciphertext.c[0] + &u + e1 + m;
@@ -148,8 +145,11 @@ mod tests {
     #[test]
     fn encrypt_decrypt() {
         let params = Arc::new(BfvParameters::default());
-
         let sk = BfvSecretKey::new(&params);
-        println!("{:#?}", sk);
+        let pk = BfvPublicKey::new(&sk);
+        let pt = BfvPlaintext::new(&params, vec![1, 2, 3, 2]);
+        let ct = pk.encrypt(&pt);
+        let pt2 = sk.decrypt(&ct);
+        assert_eq!(pt.values.into_vec(), pt2);
     }
 }
