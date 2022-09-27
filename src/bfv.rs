@@ -4,13 +4,13 @@ use crate::poly::{Context, Modulus};
 
 use super::poly::Poly;
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub struct BfvParameters {
     t: u64,
     q: u64,
     n: usize,
     st_dev: f64,
-    poly_ctx: Arc<Context>,
+    pub poly_ctx: Arc<Context>,
 }
 
 impl Default for BfvParameters {
@@ -135,6 +135,19 @@ impl BfvCipherText {
             params: params.clone(),
             c,
         }
+    }
+
+    pub fn add_ciphertexts(ct0: &BfvCipherText, ct1: &BfvCipherText) -> Self {
+        debug_assert!(ct0.params == ct1.params);
+        let c0 = &ct0.c[0] + &ct1.c[0];
+        let c1 = &ct0.c[1] + &ct1.c[1];
+        BfvCipherText::new(&ct0.params, vec![c0, c1])
+    }
+
+    pub fn multiply_pt_poly(&self, pt_poly: &Poly) -> Self {
+        let c0 = &self.c[0] * &pt_poly;
+        let c1 = &self.c[1] * &pt_poly;
+        BfvCipherText::new(&self.params, vec![c0, c1])
     }
 }
 
