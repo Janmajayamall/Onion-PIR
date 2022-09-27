@@ -236,4 +236,49 @@ impl Poly {
         debug_assert!(self.ctx.moduli.q < ctx.moduli.q);
         self.ctx = ctx.clone();
     }
+
+    pub fn decompose(&self, base: u64) -> Vec<Poly> {
+        // base should be power of 2
+        debug_assert!((base & (base - 1)) == 0);
+
+        let l = ((self.ctx.moduli.q as f64).log2() / (base as f64).log2()).floor() as u64;
+
+        let decomposed_coeffs: Vec<Vec<u64>> = self
+            .coeffs
+            .iter()
+            .map(|v| decompose_value(*v, base.try_into().unwrap()))
+            .collect();
+
+        let poly_ctx = Arc::new(Context::new(Modulus { q: base }, self.ctx.degree));
+
+        (0..l as usize)
+            .into_iter()
+            .map(|d_index| {
+                let mut p = Poly::zero(&poly_ctx);
+                p.coeffs
+                    .iter_mut()
+                    .enumerate()
+                    .for_each(|(index, c)| *c = decomposed_coeffs[index][d_index]);
+                p
+            })
+            .collect()
+    }
+}
+
+/// Decomposes `value` into `window_size` bits.
+/// For `value` it returns [a0, a1, ..., ak]
+/// where each value `a{x}` is `window_size` bit
+/// value and `value = a0 * k^0 + a1 * k + a1 * k^2`
+/// where `k = 2 ** window_size`
+pub fn decompose_value(mut value: u64, window_size: usize) -> Vec<u64> {
+    let mut bitvec = Vec::new();
+    value = value.to_be();
+    while value != 0 {
+        bitvec.push(value & 1);
+        value >>= 1;
+    }
+    bitvec
+        .chunks(window_size)
+        .map(|chunk| chunk.iter().rev().fold(0, |acc, v| (acc << 1) + *v))
+        .collect()
 }

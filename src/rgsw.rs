@@ -23,6 +23,8 @@ use super::bfv::BfvCipherText;
 /// E (2l X 2)
 struct Rgsw {
     cts: Vec<Vec<BfvCipherText>>,
+    beta: u64,
+    l: usize,
 }
 
 impl Rgsw {
