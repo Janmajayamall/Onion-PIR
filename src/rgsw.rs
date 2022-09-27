@@ -1,8 +1,5 @@
-use std::task::Poll;
-
-use crate::poly::Poly;
-
 use super::bfv::BfvCipherText;
+use crate::poly::Poly;
 
 /// Structure:
 /// Params: \beta & l
