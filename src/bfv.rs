@@ -144,6 +144,12 @@ impl BfvCipherText {
         BfvCipherText::new(&ct0.params, vec![c0, c1])
     }
 
+    pub fn negate(&self) -> Self {
+        let mut res = self.clone();
+        res.c.iter_mut().for_each(|poly| *poly = -(poly));
+        res
+    }
+
     pub fn multiply_pt_poly(&self, pt_poly: &Poly) -> Self {
         let c0 = &self.c[0] * &pt_poly;
         let c1 = &self.c[1] * &pt_poly;

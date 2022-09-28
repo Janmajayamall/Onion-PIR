@@ -94,3 +94,5 @@ fn build_query(
 
     bfv_pk.encrypt(&pt)
 }
+
+// TODO implement substitution

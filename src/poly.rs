@@ -1,6 +1,7 @@
 use super::utils::{sample_gaussian_vec, sample_uniform_vec};
 use std::{
     clone,
+    intrinsics::assert_inhabited,
     ops::{Add, AddAssign, Deref, Mul, MulAssign, Neg, Rem, Sub, SubAssign},
     sync::Arc,
 };
@@ -164,11 +165,23 @@ impl Mul<&Poly> for &Poly {
     }
 }
 
-impl Mul for Poly {
+impl Mul<Poly> for Poly {
     type Output = Poly;
     fn mul(self, mut rhs: Poly) -> Self::Output {
         rhs *= &self;
         rhs
+    }
+}
+
+impl Mul<u64> for &Poly {
+    type Output = Poly;
+    fn mul(self, rhs: u64) -> Self::Output {
+        assert!(rhs < self.ctx.moduli.q);
+        let mut res = Poly::zero(&self.ctx);
+        res.coeffs
+            .iter_mut()
+            .for_each(|v| *v = res.ctx.moduli.mul_mod(*v, rhs));
+        res
     }
 }
 
