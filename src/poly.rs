@@ -274,6 +274,31 @@ impl Poly {
             })
             .collect()
     }
+
+    /// Transforms a poly of form `Σ b_i • X^i`
+    /// to `Σ b_i • X^(k*i)`
+    pub fn shift_powers(&self, k: u64) -> Self {
+        let mut res = Poly::zero(&self.ctx);
+        self.coeffs.iter().enumerate().for_each(|(power, c)| {
+            let new_power = k * power as u64;
+            let rounds = new_power / self.ctx.degree as u64;
+            let new_reduced_power = new_power % self.ctx.degree as u64;
+
+            // if `-1^rounds` is `+`
+            if rounds % 2 == 0 {
+                res.coeffs[new_reduced_power as usize] = res
+                    .ctx
+                    .moduli
+                    .add_mod(res.coeffs[new_reduced_power as usize], *c);
+            } else {
+                res.coeffs[new_reduced_power as usize] = res
+                    .ctx
+                    .moduli
+                    .sub_mod(res.coeffs[new_reduced_power as usize], *c)
+            }
+        });
+        res
+    }
 }
 
 /// Decomposes `value` into `window_size` bits.

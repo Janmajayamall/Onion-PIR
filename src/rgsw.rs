@@ -6,15 +6,15 @@ use crate::{
 
 /// Key switching key
 ///
-/// Params \beta & l
+/// Params ß & l
 /// Note: Least significant first
 /// [
-///     RLWE_s'( q/beta^l * s)
-///     RLWE_s'( q/beta^{l-1} * s)
+///     RLWE_s'( q/ß^l * s)
+///     RLWE_s'( q/ß^{l-1} * s)
 ///     .
 ///     .   
 ///     .
-///     RLWE_s'( q/beta^1 * s)
+///     RLWE_s'( q/ß^1 * s)
 /// ]
 /// `RLWE_s'` means encrypted under `s'`,
 /// where `s'` is the new key
@@ -81,27 +81,61 @@ impl Ksk {
         // Note that
         BfvCipherText::add_ciphertexts(&b_under_new_sk, &a_curr_s)
     }
+
+    /// Subs(•,k) converts `RLWE(Σ b_i • X^i)`
+    /// to `RLWE(Σ b_i • (X^i)^k)`.
+    /// The operation uses key switching
+    /// along with the fact that:
+    /// If `ct(X) = (c0(X), c1(X))` for `M(X)`, where
+    /// `M(X) = Σ b_i • X^i` under S(X) as secret key
+    /// then
+    /// `ct(X^k) = (c0(X^k), c1(X^k))` for `M(X^k)`
+    /// (i.e. Σ b_i • (X^i)^k) under S(X^k) as secret key.
+    ///
+    /// So the trick is as follows:
+    /// For `Subs(•,k)`, take ct(X) transform it to ct(X^k).
+    /// Create new `Ksk` with params `curr_sk=S(X^k)` and
+    /// `new_key=S(X)` and then perform key switch operation
+    /// so that you obtain M(X^k) encrypt under `new_key` that is
+    /// `S(X)`
+    ///
+    /// Also note that since we are operating on polynomial
+    /// integers modulus some cyclotomic polynomial `X^N + 1`,
+    /// following holds whenever k = N + 1
+    /// Subs(•, N + 1) transforms
+    /// `RLWE(Σ b_i • X^i)`
+    /// => `RLWE(Σ b_i • (X^i)^(N+1))`
+    /// => `RLWE(Σ b_i • (X^(Ni+i))` ---- (1)
+    /// Since X^N + 1 = 0 mod (X^N + 1)
+    /// => X^N = -1 mod (X^N + 1)
+    /// => (X^N)^i = X^(N*i) = -1^i mod (X^N + 1) ---- (2)
+    /// Therefore following from (1) and (2)
+    /// we can write (1) as following
+    /// => `RLWE(Σ b_i • -1^(i) • X^(i))`
+    pub fn gen_substitution_key(sk: &BfvSecretKey, k: u64) {
+        
+    }
 }
 
 /// Structure:
-/// Params: \beta & l
+/// Params: \ß & l
 /// Note: Least significant first
 /// [
 ///     [
-///         RLWE( q/beta^l * -s * m)
-///         RLWE( q/beta^{l-1} * -s * m)
+///         RLWE( q/ß^l * -s * m)
+///         RLWE( q/ß^{l-1} * -s * m)
 ///         .
 ///         .
 ///         .
-///         RLWE( q/beta^1 * -s * m)
+///         RLWE( q/ß^1 * -s * m)
 ///     ]
 ///     [
-///         RLWE( q/beta^l * m)
-///         RLWE( q/beta^{l-1} * m)
+///         RLWE( q/ß^l * m)
+///         RLWE( q/ß^{l-1} * m)
 ///         .
 ///         .
 ///         .
-///         RLWE( q/beta^{1} * m)
+///         RLWE( q/ß^{1} * m)
 ///     ]
 /// ]
 /// E (2l X 2)
