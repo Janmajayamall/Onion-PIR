@@ -1,7 +1,5 @@
 use super::utils::{sample_gaussian_vec, sample_uniform_vec};
 use std::{
-    clone,
-    intrinsics::assert_inhabited,
     ops::{Add, AddAssign, Deref, Mul, MulAssign, Neg, Rem, Sub, SubAssign},
     sync::Arc,
 };

@@ -33,7 +33,7 @@ impl Ksk {
         let new_pk = BfvPublicKey::new(new_sk);
         let cts = (l..0).into_iter().map(|index| {
             // encrypt under new_sk
-            let pt = &curr_sk * (q_ref / beta.pow(index as u32));
+            let pt = &curr_sk.poly * (q_ref / beta.pow(index as u32));
             let pt = BfvPlaintext::new(&new_sk.params, pt.coeffs.into());
             new_pk.encrypt(&pt)
         });
@@ -52,7 +52,7 @@ impl Ksk {
         debug_assert!(a_decomposed.len() == ksk.cts.len());
 
         // RLWE encryption of `a * curr_sk` under new_sk
-        let a_curr_s = a_decomposed
+        let mut a_curr_s = a_decomposed
             .iter()
             .zip(ksk.cts.iter())
             .map(|(a_pt, rlwe_ct)| rlwe_ct.multiply_pt_poly(a_pt))
@@ -66,11 +66,12 @@ impl Ksk {
                 ),
                 |acc, ct| BfvCipherText::add_ciphertexts(&acc, &ct),
             );
+        a_curr_s.negate();
 
         // RLWE encryption of `b` under new_sk
         let b_under_new_sk = ksk.new_pk.encrypt(&BfvPlaintext::new(
             &ksk.new_pk.params,
-            ct.c[0].coeffs.into(),
+            ct.c[0].coeffs.clone(),
         ));
 
         // (/delta * M) + E_old = B - (A * S_curr)
@@ -78,7 +79,7 @@ impl Ksk {
         // returns `(/delta * M) + E_old` under new_sk.
         //
         // Note that
-        BfvCipherText::add_ciphertexts(&b_under_new_sk, &(&a_curr_s.negate()))
+        BfvCipherText::add_ciphertexts(&b_under_new_sk, &a_curr_s)
     }
 }
 
