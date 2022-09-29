@@ -47,6 +47,14 @@ impl BfvSecretKey {
         }
     }
 
+    pub fn new_with_poly(params: &Arc<BfvParameters>, mut poly: Poly) -> Self {
+        poly.switch_context(&params.poly_ctx);
+        Self {
+            params: params.clone(),
+            poly,
+        }
+    }
+
     pub fn decrypt(&self, ct: &BfvCipherText) -> Vec<u64> {
         let mut poly = &ct.c[1] * &self.poly + ct.c[0].clone();
         poly.coeffs

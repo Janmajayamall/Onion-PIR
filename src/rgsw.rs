@@ -23,10 +23,20 @@ struct Ksk {
     new_pk: BfvPublicKey,
     beta: u64,
     l: u64,
+    is_subs: bool,
+    subs_k: Option<u64>,
 }
 
 impl Ksk {
-    pub fn new(curr_sk: &BfvSecretKey, new_sk: &BfvSecretKey, beta: u64) -> Self {
+    pub fn new(
+        curr_sk: &BfvSecretKey,
+        new_sk: &BfvSecretKey,
+        beta: u64,
+        is_subs: bool,
+        subs_k: Option<u64>,
+    ) -> Self {
+        assert!(is_subs && subs_k.is_some() || subs_k.is_none());
+
         let q_ref = curr_sk.params.poly_ctx.moduli.q;
         let l = ((q_ref as f64).log2() / (beta as f64).log2()).floor() as u64;
 
@@ -43,10 +53,12 @@ impl Ksk {
             new_pk,
             beta,
             l,
+            is_subs,
+            subs_k,
         }
     }
 
-    pub fn key_switch(ksk: Ksk, ct: BfvCipherText) -> BfvCipherText {
+    pub fn key_switch(ksk: &Ksk, ct: BfvCipherText) -> BfvCipherText {
         let a_decomposed = ct.c[1].decompose(ksk.beta);
 
         debug_assert!(a_decomposed.len() == ksk.cts.len());
@@ -77,8 +89,6 @@ impl Ksk {
         // (/delta * M) + E_old = B - (A * S_curr)
         // Thus homomorphic computation of `B - (A * S_curr)` under new_sk
         // returns `(/delta * M) + E_old` under new_sk.
-        //
-        // Note that
         BfvCipherText::add_ciphertexts(&b_under_new_sk, &a_curr_s)
     }
 
@@ -112,8 +122,33 @@ impl Ksk {
     /// Therefore following from (1) and (2)
     /// we can write (1) as following
     /// => `RLWE(Σ b_i • -1^(i) • X^(i))`
-    pub fn gen_substitution_key(sk: &BfvSecretKey, k: u64) {
-        
+    ///
+    /// `ksk` is key switching key corresponding to
+    /// Subs(•,k).  
+    pub fn substitute(ksk: &Ksk, ct: &BfvCipherText) -> BfvCipherText {
+        assert!(ksk.is_subs && ksk.subs_k.is_some());
+
+        // ct(X) -> ct(X^k)
+        let ct_k = BfvCipherText::new(
+            &ct.params,
+            ct.c.iter()
+                .map(|poly| poly.shift_powers(ksk.subs_k.unwrap()))
+                .collect(),
+        );
+
+        Ksk::key_switch(ksk, ct_k)
+    }
+
+    /// Generates key switching key for
+    /// Subs(•, k) operation
+    ///
+    /// Takes in secret key `sk` and returns
+    /// key switching key for necessary ops.
+    pub fn gen_substitution_key(sk: &BfvSecretKey, k: u64, beta: u64) -> Self {
+        // S(X^k)
+        let sk_k_poly = sk.poly.shift_powers(k);
+        let sk_k = BfvSecretKey::new_with_poly(&sk.params, sk_k_poly);
+        Ksk::new(&sk_k, sk, beta, true, Some(k))
     }
 }
 
