@@ -18,8 +18,8 @@ use crate::{
 /// ]
 /// `RLWE_s'` means encrypted under `s'`,
 /// where `s'` is the new key
-struct Ksk {
-    cts: Vec<BfvCipherText>,
+pub struct Ksk {
+    pub cts: Vec<BfvCipherText>,
     new_pk: BfvPublicKey,
     beta: u64,
     l: u64,

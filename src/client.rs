@@ -3,6 +3,7 @@ use std::sync::Arc;
 use crate::{
     bfv::{BfvCipherText, BfvParameters, BfvPlaintext, BfvPublicKey},
     poly::Poly,
+    rgsw::Ksk,
 };
 
 struct QueryParams {
@@ -66,7 +67,9 @@ fn build_query(
     //         0,0,0,1
     //     ]
     // ]
-    // and encode them into Bfv ciphertext
+    // and encode them into Bfv ciphertext. This means simply flat
+    // map all values as coefficients of the Bfv plaintext
+    // polynomial.
     let mut expanded_dims = Vec::new();
     dims.iter().enumerate().for_each(|(index, value)| {
         let mut expanded_dim = Vec::<u64>::new();
@@ -92,7 +95,56 @@ fn build_query(
         expanded_dims.iter().flatten().copied().collect(),
     );
 
+    // So now we have a Bfv ciphertext that encrypts
+    // a polynomial that consists of bits as its
+    // coefficients.
+    // In order to determine indexes the client is
+    // interested in hypercube, the server needs to
+    // convert ciphertext encrypting polynomial with
+    // bits encoded as coefficients to ciphertexts
+    // encrypting individual bits. This is achieved
+    // using `Subs(•,k)` operation.
     bfv_pk.encrypt(&pt)
 }
 
-// TODO implement substitution
+///
+/// Let's consider the following bit vector
+/// [0, 1, 0, 1, 1, 0...]
+///
+/// We encode the bit vector into a `BfvPlaintext` as following
+/// `0•X^0 + 1•X^1 + 0•X^2 + 1•X^3 + ... + Nth_bit•X^{N-1}
+/// and then encrypt it under secret key `SK`. Let's call the
+/// encrypted ciphertext `C`.
+///
+/// We need to recover individual bits encrypted under `SK`
+/// from the ciphertext `C`. We achieve this using the following
+/// way:
+///
+/// Assume that our poly operations are modulo cyclotomic
+/// polynomial `X^16 + 1`. (i.e. N = 16)
+///
+/// Note: that `X^N = -1` and `(X^i)^N+1 = X^(Ni+i) = X^Ni * X^i`
+/// Therefore, `(X^i)^N+1 = -1^i * X^i`
+///
+/// We will use the statement above to separate encryption of odd
+/// terms and even terms in `C` into two different encryptions.
+///
+/// `C_even = C + Subs(C, N+1)` --> Encryption of only even terms
+/// `C_odd = C - Subs(C, N+1)` --> Encryption of only odd terms
+///
+/// Note: that `Subs(C, N+1)` transforms `Enc(Σ b_i • X^i)` to
+/// `Enc(Σ b_i • (X^i)^(N+1))`. Also, `Σ b_i • (X^i)^(N+1)` is equal
+/// to `Σ b_i • (X^i)` except that all its odd position are -ve.
+/// Therefore,
+/// `Enc(Σ b_i • X^i)` + `Enc(Σ b_i • (X^i)^(N+1))` = Ct_even
+/// AND
+/// `Enc(Σ b_i • X^i)` - `Enc(Σ b_i • (X^i)^(N+1))` = Ct_odd
+///
+/// Also notice that in case of `Ct_odd` the powers are odd, which
+/// wouldn't isn't useful in subsequent steps. Thus we change Ct_odd
+/// `Ct_odd = Ct_odd * X^-1`
+///
+/// Therefore now we have
+/// Ct_even = C + Subs(C, N+1) = Enc(Σ 2b_2i • X^2i)
+/// Ct_odd = (C - Subs(C, N+1)) • X^-1 = Enc(Σ 2b_2i+1 • X^2i)
+fn resolve_query(query_ct: &BfvCipherText, ksks: Vec<Ksk>) {}
