@@ -1,7 +1,10 @@
 use std::mem::size_of;
 
-use rand_distr::{num_traits::PrimInt, Distribution, Normal, Uniform};
-
+use num_bigint_dig::{BigUint, ModInverse};
+use rand_distr::{
+    num_traits::{FromPrimitive, PrimInt, ToPrimitive},
+    Distribution, Normal, Uniform,
+};
 pub fn sample_gaussian_vec(size: usize, std_dev: f64) -> Vec<f64> {
     let normal = Normal::new(0 as f64, std_dev).unwrap();
     let mut rng = rand::thread_rng();
@@ -19,4 +22,11 @@ pub fn sample_uniform_vec(size: usize, max: u64) -> Vec<u64> {
 /// @ref: https://github.com/tlepoint/fhe.rs/blob/27508002ea516d9ba41d0aa756bec7347f8404b2/crates/fhe-util/src/lib.rs#L193
 pub fn ilog2<T: PrimInt>(value: T) -> usize {
     size_of::<T>() * 8 - 1 - value.leading_zeros() as usize
+}
+
+// Returns multiplicative inverse of `v mod q`
+pub fn mod_inverse(v: u64, q: u64) -> Option<u64> {
+    let v = BigUint::from_u64(v).unwrap();
+    let q = BigUint::from_u64(q).unwrap();
+    v.mod_inverse(q)?.to_u64()
 }

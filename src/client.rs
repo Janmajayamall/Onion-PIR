@@ -5,7 +5,7 @@ use crate::{
     bfv::{BfvCipherText, BfvParameters, BfvPlaintext, BfvPublicKey},
     poly::{Context, Modulus, Poly},
     rgsw::Ksk,
-    utils::ilog2,
+    utils::{ilog2, mod_inverse},
 };
 
 struct QueryParams {
@@ -166,7 +166,7 @@ fn build_query(
 ///                     2^(i+1)*[x0]         2^(i+1)*[x4] * x^-(2^i)
 ///
 /// Ref - Algorithm 3 & 4 of https://eprint.iacr.org/2019/736.pdf
-fn resolve_query(query_ct: &BfvCipherText, ksks: Vec<Ksk>) {
+fn resolve_query(query_ct: &BfvCipherText, ksks: Vec<Ksk>) -> Vec<BfvCipherText> {
     let mut enc_bits: Vec<BfvCipherText> = vec![query_ct.clone()];
     let n = query_ct.params.poly_ctx.degree;
     let logn = ilog2(n);
@@ -208,6 +208,18 @@ fn resolve_query(query_ct: &BfvCipherText, ksks: Vec<Ksk>) {
 
         enc_bits = curr_branch;
     }
+
+    assert!(enc_bits.len() == query_ct.params.n);
+
+    // Note that enc_bits = [RLWE(n * b0), RLWE(n * b1), ...RLWE(n * b{n-1})].
+    // Thus we multiply all RLWEs with inverse of `n` in pt modulus `t` to get
+    // RLWE(bi)
+    let n_inv = mod_inverse(query_ct.params.n as u64, query_ct.params.t).unwrap();
+    enc_bits
+        .iter()
+        // change this to inverse
+        .map(|ct| BfvCipherText::multiply_constant(ct, n_inv))
+        .collect()
 }
 
 pub fn gen_x_pow_polys(
@@ -215,13 +227,14 @@ pub fn gen_x_pow_polys(
     poly_ctx: &Arc<Context>,
     n: usize,
 ) -> Vec<Poly> {
-    // TODO: Understand the intuition before X^-k = X^(2n-k)
+    // X^-k = -X^(N-k)
     (0..ilog2(n))
         .into_iter()
         .map(|i| {
             let mut poly = Poly::zero(poly_ctx);
-            poly.coeffs[1] = 1;
-            poly.shift_powers((2 * poly_ctx.degree - (2.pow(i) as usize)) as u64);
+            poly.coeffs[1] = 1; // X
+            poly.shift_powers((poly_ctx.degree - 2.pow(i) as usize) as u64); // X^(N-k)
+            poly = -poly; // -X^(N-k)
             poly
         })
         .collect()
