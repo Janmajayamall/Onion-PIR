@@ -1,10 +1,9 @@
-use std::{sync::Arc, vec};
-
 use rand_distr::num_traits::Pow;
+use std::{sync::Arc, vec};
 
 use crate::{
     bfv::{BfvCipherText, BfvParameters, BfvPlaintext, BfvPublicKey},
-    poly::Poly,
+    poly::{Context, Modulus, Poly},
     rgsw::Ksk,
     utils::ilog2,
 };
@@ -154,17 +153,17 @@ fn build_query(
 /// Now to obtain `Enc(b_i)`s of bits we perform the same operation
 /// recursively. After `log(N)` branches we will have `Enc(N * b_i)`
 /// as N leaf nodes.
-/// `k = n/2^(i-1) + 1`
+/// `k = n/2^(i) + 1`
 ///                                    [x0, x1, x2, x3, x4, x5, x6, x7] depth of tree: logN
-///                                      / i = 1                                       \
+///                                      / i = 0                                       \
 ///                                     / C + Subs(•, k)                                \ C - Subs(•, k)          
-///                         2^k*[x0, x2, x4, x6], n/2^(k-1) + 1         2^k*[x1, x3, x5, x7] * x^-k => 2*[x0, x2, x4, x6, x8]
-///                                    / i = 2              \
+///                                  2^(i+1)*[x0, x2, x4, x6]                     2^(i+1)*[x1, x3, x5, x7] * x^-(2^i) => 2^i*[x0, x2, x4, x6, x8]
+///                                    / i = 1              \
 ///                                   / C + Subs(•, k)       \ C - Subs(•, k)          
-///            Subs(2^k*[x0, x4], n/2^(k-1) + 1)          2^k*[x2, x6] * -k
-///                                  / i = 3                    \
-///                                 / C + Subs(•, k)             \ C - Subs(•, k)          
-///                             2^k*[x0]                        2^k*[x4] * x^-k
+///                             2^(i+1)*[x0, x4]             2^(i+1)*[x2, x6] * x^-(2^i)
+///                             / i = 2        \
+///                            / C + Subs(•, k) \ C - Subs(•, k)          
+///                     2^(i+1)*[x0]         2^(i+1)*[x4] * x^-(2^i)
 ///
 /// Ref - Algorithm 3 & 4 of https://eprint.iacr.org/2019/736.pdf
 fn resolve_query(query_ct: &BfvCipherText, ksks: Vec<Ksk>) {
@@ -176,7 +175,16 @@ fn resolve_query(query_ct: &BfvCipherText, ksks: Vec<Ksk>) {
     // such that their `subs_k` match: n, n/2, n/4...n/2^logn - 1
     assert!(ksks.len() == logn - 1);
 
-    for i in 1..logn {
+    // Should be in `Rt` since all X^-(2^i) polys are plaintext
+    let rt_ctx = Arc::new(Context::new(
+        Modulus {
+            q: query_ct.params.t,
+        },
+        query_ct.params.n,
+    ));
+    let x_polys = gen_x_pow_polys(&rt_ctx, n);
+
+    for i in 0..logn {
         let k = (n as usize / 2.pow(i - 1) as usize) + 1;
         let mut curr_branch: Vec<BfvCipherText> = vec![];
         for j in 0..enc_bits.len() {
@@ -187,10 +195,34 @@ fn resolve_query(query_ct: &BfvCipherText, ksks: Vec<Ksk>) {
             ));
 
             // c_odd = c - Subs(•, k)
-            curr_branch.push(BfvCipherText::add_ciphertexts(
-                &enc_bits[j],
-                &Ksk::substitute(&ksks[i], &enc_bits[j]),
-            ));
+            // c_odd = c_odd * X^-(2^i)
+            let c_odd = BfvCipherText::multiply_pt_poly(
+                &BfvCipherText::sub_ciphertexts(
+                    &enc_bits[j],
+                    &Ksk::substitute(&ksks[i], &enc_bits[j]),
+                ),
+                &x_polys[i],
+            );
+            curr_branch.push(c_odd);
         }
+
+        enc_bits = curr_branch;
     }
+}
+
+pub fn gen_x_pow_polys(
+    // x^-(2^0) ... x^-(2^(logn))
+    poly_ctx: &Arc<Context>,
+    n: usize,
+) -> Vec<Poly> {
+    // TODO: Understand the intuition before X^-k = X^(2n-k)
+    (0..ilog2(n))
+        .into_iter()
+        .map(|i| {
+            let mut poly = Poly::zero(poly_ctx);
+            poly.coeffs[1] = 1;
+            poly.shift_powers((2 * poly_ctx.degree - (2.pow(i) as usize)) as u64);
+            poly
+        })
+        .collect()
 }

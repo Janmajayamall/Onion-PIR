@@ -6,10 +6,10 @@ use super::poly::Poly;
 
 #[derive(Debug, PartialEq)]
 pub struct BfvParameters {
-    t: u64,
-    q: u64,
-    n: usize,
-    st_dev: f64,
+    pub t: u64,
+    pub q: u64,
+    pub n: usize,
+    pub st_dev: f64,
     pub poly_ctx: Arc<Context>,
 }
 
@@ -150,6 +150,12 @@ impl BfvCipherText {
         let c0 = &ct0.c[0] + &ct1.c[0];
         let c1 = &ct0.c[1] + &ct1.c[1];
         BfvCipherText::new(&ct0.params, vec![c0, c1])
+    }
+
+    pub fn sub_ciphertexts(ct0: &BfvCipherText, ct1: &BfvCipherText) -> Self {
+        debug_assert!(ct0.params == ct1.params);
+        let ct1 = BfvCipherText::negate(ct1);
+        BfvCipherText::add_ciphertexts(ct0, &ct1)
     }
 
     pub fn negate(ct: &BfvCipherText) -> BfvCipherText {

@@ -78,7 +78,6 @@ impl Ksk {
                 ),
                 |acc, ct| BfvCipherText::add_ciphertexts(&acc, &ct),
             );
-        // a_curr_s.negate();
 
         // RLWE encryption of `b` under new_sk
         let b_under_new_sk = ksk.new_pk.encrypt(&BfvPlaintext::new(
@@ -89,7 +88,7 @@ impl Ksk {
         // (/delta * M) + E_old = B - (A * S_curr)
         // Thus homomorphic computation of `B - (A * S_curr)` under new_sk
         // returns `(/delta * M) + E_old` under new_sk.
-        BfvCipherText::add_ciphertexts(&b_under_new_sk, &a_curr_s)
+        BfvCipherText::sub_ciphertexts(&b_under_new_sk, &a_curr_s)
     }
 
     /// Subs(•,k) converts `RLWE(Σ b_i • X^i)`
