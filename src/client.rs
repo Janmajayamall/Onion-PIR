@@ -1,9 +1,12 @@
-use std::sync::Arc;
+use std::{sync::Arc, vec};
+
+use rand_distr::num_traits::Pow;
 
 use crate::{
     bfv::{BfvCipherText, BfvParameters, BfvPlaintext, BfvPublicKey},
     poly::Poly,
     rgsw::Ksk,
+    utils::ilog2,
 };
 
 struct QueryParams {
@@ -162,4 +165,32 @@ fn build_query(
 ///                                  / i = 3                    \
 ///                                 / C + Subs(•, k)             \ C - Subs(•, k)          
 ///                             2^k*[x0]                        2^k*[x4] * x^-k
-fn resolve_query(query_ct: &BfvCipherText, ksks: Vec<Ksk>) {}
+///
+/// Ref - Algorithm 3 & 4 of https://eprint.iacr.org/2019/736.pdf
+fn resolve_query(query_ct: &BfvCipherText, ksks: Vec<Ksk>) {
+    let mut enc_bits: Vec<BfvCipherText> = vec![query_ct.clone()];
+    let n = query_ct.params.poly_ctx.degree;
+    let logn = ilog2(n);
+
+    // TODO: Figure out way to check the order of `ksks`
+    // such that their `subs_k` match: n, n/2, n/4...n/2^logn - 1
+    assert!(ksks.len() == logn - 1);
+
+    for i in 1..logn {
+        let k = (n as usize / 2.pow(i - 1) as usize) + 1;
+        let mut curr_branch: Vec<BfvCipherText> = vec![];
+        for j in 0..enc_bits.len() {
+            // c_even = c + Subs(•, k)
+            curr_branch.push(BfvCipherText::add_ciphertexts(
+                &enc_bits[j],
+                &Ksk::substitute(&ksks[i], &enc_bits[j]),
+            ));
+
+            // c_odd = c - Subs(•, k)
+            curr_branch.push(BfvCipherText::add_ciphertexts(
+                &enc_bits[j],
+                &Ksk::substitute(&ksks[i], &enc_bits[j]),
+            ));
+        }
+    }
+}

@@ -67,7 +67,7 @@ impl Ksk {
         let mut a_curr_s = a_decomposed
             .iter()
             .zip(ksk.cts.iter())
-            .map(|(a_pt, rlwe_ct)| rlwe_ct.multiply_pt_poly(a_pt))
+            .map(|(a_pt, rlwe_ct)| BfvCipherText::multiply_pt_poly(rlwe_ct, a_pt))
             .fold(
                 BfvCipherText::new(
                     &ksk.new_pk.params,
@@ -78,7 +78,7 @@ impl Ksk {
                 ),
                 |acc, ct| BfvCipherText::add_ciphertexts(&acc, &ct),
             );
-        a_curr_s.negate();
+        // a_curr_s.negate();
 
         // RLWE encryption of `b` under new_sk
         let b_under_new_sk = ksk.new_pk.encrypt(&BfvPlaintext::new(
@@ -197,7 +197,7 @@ impl Rgsw {
         let bm = b_decomposed
             .iter()
             .zip(rgsw.cts[1].iter())
-            .map(|(pt_poly, rlwe)| rlwe.multiply_pt_poly(pt_poly))
+            .map(|(pt_poly, rlwe)| BfvCipherText::multiply_pt_poly(&rlwe, pt_poly))
             .fold(
                 BfvCipherText::new(
                     &bfv_ref,
@@ -209,7 +209,7 @@ impl Rgsw {
         let n_asm = a_decomposed
             .iter()
             .zip(rgsw.cts[0].iter())
-            .map(|(pt_poly, rlwe)| rlwe.multiply_pt_poly(pt_poly))
+            .map(|(pt_poly, rlwe)| BfvCipherText::multiply_pt_poly(&rlwe, pt_poly))
             .fold(
                 BfvCipherText::new(
                     &bfv_ref,

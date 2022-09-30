@@ -131,7 +131,7 @@ impl BfvPlaintext {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct BfvCipherText {
     pub params: Arc<BfvParameters>,
     pub c: Vec<Poly>,
@@ -152,14 +152,31 @@ impl BfvCipherText {
         BfvCipherText::new(&ct0.params, vec![c0, c1])
     }
 
-    pub fn negate(&mut self) {
-        self.c.iter_mut().for_each(|poly| *poly = -poly.to_owned());
+    pub fn negate(ct: &BfvCipherText) -> BfvCipherText {
+        // to negate: -1 * Ct
+        // -1 mod t == t-1 mod t
+        // TODO: Handle such ops in a better way
+        BfvCipherText::multiply_constant(ct, ct.params.t - 1)
     }
 
-    pub fn multiply_pt_poly(&self, pt_poly: &Poly) -> Self {
-        let c0 = &self.c[0] * pt_poly;
-        let c1 = &self.c[1] * pt_poly;
-        BfvCipherText::new(&self.params, vec![c0, c1])
+    pub fn multiply_pt_poly(ct: &BfvCipherText, pt_poly: &Poly) -> BfvCipherText {
+        // plaintext polynomial must be Rt
+        assert!(pt_poly.ctx.moduli.q <= ct.params.t);
+        let mut pt_poly = pt_poly.clone();
+        pt_poly.switch_context(&ct.params.poly_ctx);
+
+        let c0 = &ct.c[0] * &pt_poly;
+        let c1 = &ct.c[1] * &pt_poly;
+        BfvCipherText::new(&ct.params, vec![c0, c1])
+    }
+
+    pub fn multiply_constant(ct: &BfvCipherText, value: u64) -> BfvCipherText {
+        // constant must be in Z_t
+        assert!(value < ct.params.t);
+
+        let c0 = &ct.c[0] * value;
+        let c1 = &ct.c[1] * value;
+        BfvCipherText::new(&ct.params, vec![c0, c1])
     }
 }
 

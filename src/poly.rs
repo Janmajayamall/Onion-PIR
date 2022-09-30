@@ -260,6 +260,7 @@ impl Poly {
             .map(|v| decompose_value(*v, base.try_into().unwrap()))
             .collect();
 
+        // Change poly from Rq => Rb
         let poly_ctx = Arc::new(Context::new(Modulus { q: base }, self.ctx.degree));
 
         (0..l as usize)
