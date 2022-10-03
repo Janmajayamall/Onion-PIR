@@ -20,11 +20,11 @@ use crate::{
 /// where `s'` is the new key
 pub struct Ksk {
     pub cts: Vec<BfvCipherText>,
-    new_pk: BfvPublicKey,
-    beta: u64,
-    l: u64,
-    is_subs: bool,
-    subs_k: Option<u64>,
+    pub new_pk: BfvPublicKey,
+    pub beta: u64,
+    pub l: u64,
+    pub is_subs: bool,
+    pub subs_k: Option<u64>,
 }
 
 impl Ksk {
@@ -38,7 +38,7 @@ impl Ksk {
         assert!(is_subs && subs_k.is_some() || subs_k.is_none());
 
         let q_ref = curr_sk.params.poly_ctx.moduli.q;
-        let l = ((q_ref as f64).log2() / (beta as f64).log2()).floor() as u64;
+        let l = ((q_ref as f64).log2() / (beta as f64).log2()) as u64;
 
         let new_pk = BfvPublicKey::new(new_sk);
         let cts = (l..0).into_iter().map(|index| {

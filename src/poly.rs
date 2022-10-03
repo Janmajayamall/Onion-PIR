@@ -23,7 +23,7 @@ impl Modulus {
         (a + self.q - b) % self.q
     }
 
-    fn mul_mod(&self, a: u64, b: u64) -> u64 {
+    pub fn mul_mod(&self, a: u64, b: u64) -> u64 {
         debug_assert!(a <= self.q);
         debug_assert!(b <= self.q);
 
@@ -252,7 +252,7 @@ impl Poly {
         // base should be power of 2
         debug_assert!((base & (base - 1)) == 0);
 
-        let l = ((self.ctx.moduli.q as f64).log2() / (base as f64).log2()).floor() as u64;
+        let l = (self.ctx.moduli.q as f64 / base as f64).log2() as u64;
 
         let decomposed_coeffs: Vec<Vec<u64>> = self
             .coeffs
