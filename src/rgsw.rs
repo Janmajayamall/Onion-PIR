@@ -173,14 +173,22 @@ impl Ksk {
 ///     ]
 /// ]
 /// E (2l X 2)
-struct Rgsw {
+pub struct Rgsw {
     cts: Vec<Vec<BfvCipherText>>,
     beta: u64,
-    l: usize,
 }
 
 impl Rgsw {
-    fn external_product(rgsw: Rgsw, rlwe: BfvCipherText) -> BfvCipherText {
+    pub fn l(&self) -> u64 {
+        let q = self.cts[0][0].params.q;
+        ((q as f64).log2() / (self.beta as f64).log2()) as u64
+    }
+
+    pub fn new(cts: Vec<Vec<BfvCipherText>>, beta: u64) -> Self {
+        Self { cts, beta }
+    }
+
+    pub fn external_product(rgsw: &Rgsw, rlwe: &BfvCipherText) -> BfvCipherText {
         // Steps (C[0] is B, C[1] is A)
         // (1) Decompose B and A of rlwe into B` and A`
         // (2) Perform <B`, RGWS[1]> and <A`, RGSW[0]>

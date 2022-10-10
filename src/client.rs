@@ -1,3 +1,4 @@
+use crate::rgsw::Rgsw;
 use rand_distr::num_traits::Pow;
 use std::{sync::Arc, vec};
 
@@ -14,6 +15,7 @@ pub struct QueryParams {
     // 4 by default
     pub normal_dim: u64,
     pub gadget_beta: u64,
+    pub db_len: u64,
 }
 
 fn build_query(
@@ -102,14 +104,10 @@ fn build_query(
 
     // generate coefficients
     let l = ((bfv_params.q as f64).log2() / (query_params.gadget_beta as f64).log2()) as u64;
-    let pt_space = Modulus { q: bfv_params.t };
-    let beta_inv = mod_inverse(query_params.gadget_beta, bfv_params.t).unwrap();
-    let mut q_beta_inv = pt_space.convert(bfv_params.q);
-    let coeffs: Vec<_> = (0..l)
-        .map(|_| {
-            q_beta_inv = pt_space.mul_mod(q_beta_inv, beta_inv);
-            q_beta_inv
-        })
+    // FIXME: For some reason (q/B^i) != (q * B_inv). So this means we
+    // will have to calculate integer values
+    let coeffs: Vec<_> = (l..0)
+        .map(|i| ((bfv_params.q as f64) / (query_params.gadget_beta as f64).pow(i as i8)) as u64)
         .collect();
 
     // We need to further expand each value to `l` values in dimension vector of every dimension, except first
@@ -214,7 +212,12 @@ fn build_query(
 ///                     2^(i+1)*[x0]         2^(i+1)*[x4] * x^-(2^i)
 ///
 /// Ref - Algorithm 3 & 4 of https://eprint.iacr.org/2019/736.pdf
-fn resolve_query(query_ct: &BfvCipherText, ksks: Vec<Ksk>) -> Vec<BfvCipherText> {
+fn resolve_query(
+    query_params: QueryParams,
+    query_ct: &BfvCipherText,
+    n_s_rgsw: &Rgsw,
+    ksks: Vec<Ksk>,
+) -> (Vec<BfvCipherText>, Vec<Vec<Rgsw>>) {
     let mut enc_bits: Vec<BfvCipherText> = vec![query_ct.clone()];
     let n = query_ct.params.poly_ctx.degree;
     let logn = ilog2(n);
@@ -266,16 +269,57 @@ fn resolve_query(query_ct: &BfvCipherText, ksks: Vec<Ksk>) -> Vec<BfvCipherText>
     // Thus we multiply all RLWEs with inverse of `n` in pt modulus `t` to get
     // RLWE(bi)
     let n_inv = mod_inverse(query_ct.params.n as u64, query_ct.params.t).unwrap();
-    enc_bits
+    let enc_bits: Vec<_> = enc_bits
         .iter()
         // change this to inverse
         .map(|ct| BfvCipherText::multiply_constant(ct, n_inv))
-        .collect()
+        .collect();
 
     // Now we structure cts of bits into encrypted query vector for every dimension.
     // Note that query vector of `first_dim` consists of RLWE cts.
     // For the rest of the dimensions we have vector of RGSW cts, thus we need
     // to convert RLWE cts to RGSW cts.
+    let first_dim = &enc_bits[..query_params.first_dim as usize];
+    let rest_dims = &enc_bits[query_params.first_dim as usize..];
+
+    let l = ((query_ct.params.q as f64).log2() / (query_params.gadget_beta as f64).log2()) as u64;
+    let dim_vecs: Vec<Vec<Rgsw>> = rest_dims
+        .chunks_exact((l * query_params.normal_dim) as usize)
+        .into_iter()
+        .map(|dim_chunks| {
+            // dim_chunks / l = dimension size.
+            //
+            // Each m_rlev is RLEV(b), where `b` is a single bit of the dimension vec.
+            // We need to go from m_rlev to RGSW(m).
+            // Recall that structure of RGSW(m) = [RLEV(-sm), RLEV(m)].
+            // So we need a way to construct RLEV(-sm) from RLEV(m).
+            //
+            // Notice that
+            // RLEV(b) is of form
+            // [RLWE(q / B^i * b) for i in [1..l]]
+            // RLEV(-sb) (i.e. n_sm_rlev below) is of form
+            // [RLWE(q / B^i * -sb) for i in [1..l]]
+            //
+            // To go from RLWE(q / B^i * b) to RLWE(q / B^i * -sb)
+            // we perform external product between RGSW(-s) and RLWE(q / B^i * b).
+            // (Recall that external product between RGSW(m1) and RLWE(m2) gives
+            // RLWE(m1 * m2))
+            //
+            let dim_vec = dim_chunks
+                .chunks_exact(l as usize)
+                .into_iter()
+                .map(|m_rlev| {
+                    let n_sm_rlev: Vec<_> = m_rlev
+                        .iter()
+                        .map(|q_beta_m_rlwe| Rgsw::external_product(n_s_rgsw, q_beta_m_rlwe))
+                        .collect();
+                    Rgsw::new(vec![n_sm_rlev, m_rlev.into()], query_params.gadget_beta)
+                });
+            assert!(dim_vec.len() == query_params.normal_dim as usize);
+            dim_vec.collect()
+        })
+        .collect();
+    (first_dim.into(), dim_vecs)
 }
 
 pub fn gen_x_pow_polys(
