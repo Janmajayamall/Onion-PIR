@@ -14,7 +14,8 @@ pub struct QueryParams {
     pub first_dim: u64,
     // 4 by default
     pub normal_dim: u64,
-    pub gadget_beta: u64,
+    pub beta: u64,
+    pub l: u64,
     pub db_len: u64,
 }
 
@@ -26,7 +27,7 @@ fn build_query(
 ) -> BfvCipherText {
     // `gadget_beta` is for RLWE to RGSW trick. Make sure
     // it is a power of 2 and smaller than `t`.
-    assert!(query_params.gadget_beta.is_power_of_two());
+    assert!(query_params.beta.is_power_of_two());
 
     let mut no_of_dims = 0;
     let mut first = true;
@@ -41,7 +42,7 @@ fn build_query(
     }
 
     let mut dims = Vec::new();
-    (1..no_of_dims + 1).into_iter().for_each(|dim| {
+    (1..no_of_dims).into_iter().for_each(|dim| {
         if dim == 1 {
             dims.push(query_index % query_params.first_dim);
             query_index /= query_params.first_dim;
@@ -85,9 +86,9 @@ fn build_query(
     dims.iter().enumerate().for_each(|(index, value)| {
         let mut expanded_dim = Vec::<u64>::new();
         (0..(if index == 0 {
-            query_params.first_dim
+            query_params.first_dim - 1
         } else {
-            query_params.normal_dim
+            query_params.normal_dim - 1
         }))
             .into_iter()
             .for_each(|i| {
@@ -103,11 +104,11 @@ fn build_query(
     let bfv_params = bfv_pk.params.clone();
 
     // generate coefficients
-    let l = ((bfv_params.q as f64).log2() / (query_params.gadget_beta as f64).log2()) as u64;
+    let l = ((bfv_params.q as f64).log2() / (query_params.beta as f64).log2()) as u64;
     // FIXME: For some reason (q/B^i) != (q * B_inv). So this means we
     // will have to calculate integer values
     let coeffs: Vec<_> = (l..0)
-        .map(|i| ((bfv_params.q as f64) / (query_params.gadget_beta as f64).pow(i as i8)) as u64)
+        .map(|i| ((bfv_params.q as f64) / (query_params.beta as f64).pow(i as i8)) as u64)
         .collect();
 
     // We need to further expand each value to `l` values in dimension vector of every dimension, except first
@@ -152,7 +153,7 @@ fn build_query(
     // bits encoded as coefficients to ciphertexts
     // encrypting individual bits. This is achieved
     // using `Subs(•,k)` operation.
-    bfv_pk.encrypt(&pt)
+    bfv_pk.encrypt(&pt.poly.coeffs)
 }
 
 ///
@@ -282,7 +283,7 @@ fn resolve_query(
     let first_dim = &enc_bits[..query_params.first_dim as usize];
     let rest_dims = &enc_bits[query_params.first_dim as usize..];
 
-    let l = ((query_ct.params.q as f64).log2() / (query_params.gadget_beta as f64).log2()) as u64;
+    let l = ((query_ct.params.q as f64).log2() / (query_params.beta as f64).log2()) as u64;
     let dim_vecs: Vec<Vec<Rgsw>> = rest_dims
         .chunks_exact((l * query_params.normal_dim) as usize)
         .into_iter()
@@ -313,7 +314,11 @@ fn resolve_query(
                         .iter()
                         .map(|q_beta_m_rlwe| Rgsw::external_product(n_s_rgsw, q_beta_m_rlwe))
                         .collect();
-                    Rgsw::new(vec![n_sm_rlev, m_rlev.into()], query_params.gadget_beta)
+                    Rgsw::new(
+                        vec![n_sm_rlev, m_rlev.into()],
+                        query_params.beta,
+                        query_params.l,
+                    )
                 });
             assert!(dim_vec.len() == query_params.normal_dim as usize);
             dim_vec.collect()

@@ -1,3 +1,8 @@
+use num_bigint_dig::BigUint;
+use rand_distr::num_traits::ToPrimitive;
+
+use crate::utils::num_of_windows;
+
 use super::utils::{sample_gaussian_vec, sample_uniform_vec};
 use std::{
     ops::{Add, AddAssign, Deref, Mul, MulAssign, Neg, Rem, Sub, SubAssign},
@@ -5,10 +10,95 @@ use std::{
 };
 #[derive(Clone, PartialEq, Debug)]
 pub struct Modulus {
-    pub q: u64,
+    pub p: u64,
+    barret_hi: u64,
+    barret_lo: u64,
 }
 
+/// Implements Modulus
+///
+/// TODO:
+/// (1) Implement optimized lazy reduction (https://github.com/Janmajayamall/fhe.rs/blob/8aafe4396d0b771e6aa25257c7daa61c109eb367/crates/fhe-math/src/zq/mod.rs#L654)
 impl Modulus {
+    pub fn new(p: u64) -> Self {
+        assert!(p < 2 || (p >> 62 != 0));
+
+        // `r` in barret reduction
+        // 2**128 / p
+        let r = ((BigUint::from(1u128) << 128usize) / p).to_u128().unwrap();
+        Self {
+            p,
+            barret_hi: (r >> 64) as u64,
+            barret_lo: r as u64,
+        }
+    }
+
+    /// reduces `a` in [0, p ^ 2)
+    /// to [0, 2p) in constant time
+    ///
+    /// x - ((r * x) / 2 ^ 2k) * p
+    /// k = 64
+    ///
+    fn lazy_reduce_ct(&self, a: u64) -> u64 {
+        let low = (a as u128 * (self.barret_lo as u128)) >> 64;
+        let high = a as u128 * (self.barret_hi as u128);
+        let num = (high + low) >> 64;
+
+        let val = (a as u128) - (num * (self.p as u128));
+
+        //TODO: Add debug asserts to check whether reduction works
+
+        val as u64
+    }
+
+    fn lazy_reduce_u128(&self, a: u128) -> u64 {
+        let alo = a as u64;
+        let ahi = (a >> 64) as u64;
+
+        let alo_lo = ((alo as u128) * (self.barret_lo as u128)) >> 64;
+        let alo_hi = (alo as u128) * (self.barret_hi as u128);
+        let ahi_lo = (ahi as u128) * (self.barret_lo as u128);
+        let ahi_hi = (ahi as u128) * (self.barret_hi as u128);
+
+        let num = ((alo_hi + ahi_lo + alo_lo) >> 64) + ahi_hi;
+        let val = (a as u128) - (num * (self.p as u128));
+
+        val as u64
+    }
+
+    /// `a` must be in the range [0, 2p)
+    ///
+    /// runs `a < p ? a : a - p`
+    /// in constant time
+    ///
+    /// Ref:
+    /// (1) https://github.com/Janmajayamall/fhe.rs/blob/8aafe4396d0b771e6aa25257c7daa61c109eb367/crates/fhe-math/src/zq/mod.rs#L582
+    /// (2) https://github.com/hacspec/rust-secret-integers/blob/master/src/lib.rs#L351-L366.
+    const fn reduce_ct(x: u64, p: u64) -> u64 {
+        debug_assert!(p >> 63 == 0);
+        debug_assert!(x < 2 * p);
+
+        let (y, _) = x.overflowing_sub(p);
+        let xp = x ^ p;
+        let yp = y ^ p;
+        let xy = xp ^ yp;
+        let xxy = x ^ xy;
+        let xxy = xxy >> 63;
+        let (c, _) = xxy.overflowing_sub(1);
+        let r = (c & y) | ((!c) & x);
+
+        debug_assert!(r == x % p);
+        r
+    }
+
+    fn reduce(&self, a: u64) -> u64 {
+        Self::reduce_ct(self.lazy_reduce_ct(a), self.p)
+    }
+
+    fn reduce_128(&self, a: u128) -> u64 {
+        Self::reduce_ct(self.reduce_128(a), self.p)
+    }
+
     fn add_mod(&self, a: u64, b: u64) -> u64 {
         debug_assert!(a <= self.q);
         debug_assert!(b <= self.q);
@@ -16,27 +106,27 @@ impl Modulus {
         (a + b) % self.q
     }
 
-    fn sub_mod(&self, a: u64, b: u64) -> u64 {
-        debug_assert!(a <= self.q);
-        debug_assert!(b <= self.q);
-
-        (a + self.q - b) % self.q
+    fn add(&self, a: u64, b: u64) -> u64 {
+        debug_assert!(a < self.p);
+        debug_assert!(b < self.p);
+        Self::reduce_ct(a + b, self.p)
     }
 
-    pub fn mul_mod(&self, a: u64, b: u64) -> u64 {
-        debug_assert!(a <= self.q);
-        debug_assert!(b <= self.q);
+    fn sub(&self, a: u64, b: u64) -> u64 {
+        debug_assert!(a < self.p);
+        debug_assert!(b < self.p);
+        Self::reduce_ct(a + (self.p - b), self.p)
+    }
 
-        (a * b) % self.q
+    fn mul(&self, a: u64, b: u64) -> u64 {
+        debug_assert!(a < self.p);
+        debug_assert!(b < self.p);
+        self.reduce_128((a as u128) * (b as u128))
     }
 
     fn neg(&self, a: u64) -> u64 {
-        debug_assert!(a <= self.q);
-        (self.q - a) % self.q
-    }
-
-    pub fn convert(&self, a: u64) -> u64 {
-        a % self.q
+        debug_assert!(a < self.p);
+        Self::reduce_ct(self.p - a, self.p)
     }
 }
 
@@ -73,6 +163,14 @@ impl Poly {
     pub fn zero(ctx: &Arc<Context>) -> Self {
         Poly {
             coeffs: vec![0; ctx.degree],
+            ctx: ctx.clone(),
+        }
+    }
+
+    pub fn new(ctx: &Arc<Context>, coeffs: Vec<u64>) -> Self {
+        coeffs.iter().for_each(|v| assert!(v < &ctx.moduli.q));
+        Poly {
+            coeffs,
             ctx: ctx.clone(),
         }
     }
@@ -183,6 +281,13 @@ impl Mul<u64> for &Poly {
     }
 }
 
+impl Mul<u64> for Poly {
+    type Output = Poly;
+    fn mul(self, rhs: u64) -> Self::Output {
+        &self * rhs
+    }
+}
+
 impl Neg for &Poly {
     type Output = Poly;
     fn neg(self) -> Self::Output {
@@ -244,20 +349,17 @@ impl Poly {
     }
 
     pub fn switch_context(&mut self, ctx: &Arc<Context>) {
-        debug_assert!(self.ctx.moduli.q < ctx.moduli.q);
         self.ctx = ctx.clone();
     }
 
-    pub fn decompose(&self, base: u64) -> Vec<Poly> {
+    pub fn decompose(&self, base: u64, l: u64) -> Vec<Poly> {
         // base should be power of 2
         debug_assert!((base & (base - 1)) == 0);
-
-        let l = (self.ctx.moduli.q as f64 / base as f64).log2() as u64;
 
         let decomposed_coeffs: Vec<Vec<u64>> = self
             .coeffs
             .iter()
-            .map(|v| decompose_value(*v, base.try_into().unwrap()))
+            .map(|v| decompose_value(*v, self.ctx.moduli.q, base, l))
             .collect();
 
         // Change poly from Rq => Rb
@@ -305,17 +407,67 @@ impl Poly {
 /// Decomposes `value` into `window_size` bits.
 /// For `value` it returns [a0, a1, ..., ak]
 /// where each value `a{x}` is `window_size` bit
-/// value and `value = a0 * k^0 + a1 * k + a1 * k^2`
+/// values and `value = a0 * k^0 + a1 * k + a1 * k^2`
 /// where `k = 2 ** window_size`
-pub fn decompose_value(mut value: u64, window_size: usize) -> Vec<u64> {
+///
+pub fn decompose_value(mut value: u64, moduli: u64, base: u64, l: u64) -> Vec<u64> {
+    assert!(value < moduli);
+
+    let q_bits = (moduli as f64).log2().to_u64().unwrap();
+    let base_bits = (base as f64).log2().to_u64().unwrap();
+    let precision_bits = l * base_bits;
+
+    assert!(q_bits >= precision_bits);
+
     let mut bitvec = Vec::new();
-    value = value.to_be();
-    while value != 0 {
+    for _ in 0..q_bits {
         bitvec.push(value & 1);
         value >>= 1;
     }
-    bitvec
-        .chunks(window_size)
+
+    // trim lsb
+    bitvec = bitvec[precision_bits as usize..].to_vec();
+
+    let decomp: Vec<_> = bitvec
+        .chunks(base_bits as usize)
         .map(|chunk| chunk.iter().rev().fold(0, |acc, v| (acc << 1) + *v))
-        .collect()
+        .collect();
+    decomp
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_mul() {
+        let ctx = Arc::new(Context::new(Modulus { q: 4 }, 4));
+        let p1 = Poly::new(&ctx, vec![1, 2, 3, 3]);
+        let p2 = Poly::new(&ctx, vec![1, 3, 3, 3]);
+        let product = p1 * p2;
+        assert!(product.coeffs == vec![1, 3, 3, 1]);
+    }
+
+    #[test]
+    fn test_decompose_value() {
+        let q = 65536;
+        let value = 2532;
+        let base = 4;
+        let l = 4;
+        let decomp = decompose_value(value, q, base, l);
+
+        let value1 = decomp
+            .iter()
+            .rev()
+            .fold(0, |acc, value| (acc * base) + value);
+        assert!(value == value1);
+    }
+
+    #[test]
+    fn test_decompose_poly() {
+        let ctx = Arc::new(Context::new(Modulus { q: 65536 }, 8));
+        let poly = Poly::zero(&ctx);
+
+        let d = poly.decompose(4, 4);
+    }
 }

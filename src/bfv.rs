@@ -11,19 +11,23 @@ pub struct BfvParameters {
     pub n: usize,
     pub st_dev: f64,
     pub poly_ctx: Arc<Context>,
+    pub pt_poly_ctx: Arc<Context>,
 }
 
 impl Default for BfvParameters {
     fn default() -> Self {
+        let t = 4;
         let q: u64 = 65536;
         let degree: usize = 4;
         let ctx = Context::new(Modulus { q }, degree);
+        let pt_ctx = Context::new(Modulus { q: t }, degree);
         Self {
-            t: 4,
+            t,
             q,
             n: degree,
             st_dev: 3.2,
             poly_ctx: Arc::new(ctx),
+            pt_poly_ctx: Arc::new(pt_ctx),
         }
     }
 }
@@ -57,6 +61,7 @@ impl BfvSecretKey {
 
     pub fn decrypt(&self, ct: &BfvCipherText) -> Vec<u64> {
         let mut poly = &ct.c[1] * &self.poly + ct.c[0].clone();
+        dbg!(&poly.coeffs);
         poly.coeffs
             .iter_mut()
             .for_each(|c| *c = ((*c * self.params.t) as f64 / self.params.q as f64).round() as u64);
@@ -82,7 +87,7 @@ impl BfvPublicKey {
         }
     }
 
-    pub fn encrypt(&self, plaintext: &BfvPlaintext) -> BfvCipherText {
+    pub fn encrypt(&self, plaintext: &Vec<u64>) -> BfvCipherText {
         let mut u = Poly::random_gaussian(
             &Arc::new(Context::new(Modulus { q: 2 }, self.params.poly_ctx.degree)),
             self.params.st_dev,
@@ -96,8 +101,8 @@ impl BfvPublicKey {
         let mut m = Poly::zero(&self.params.poly_ctx);
         m.coeffs
             .iter_mut()
-            .zip(plaintext.poly.coeffs.iter())
-            .for_each(|(sv, v)| *sv = v * delta);
+            .zip(plaintext.iter())
+            .for_each(|(sv, v)| *sv = (v * delta) % self.params.q);
 
         // p0 * u + e1 + delta_m
         let c0 = &self.ciphertext.c[0] + &u + e1 + m;
@@ -117,11 +122,11 @@ pub struct BfvPlaintext {
 
 impl BfvPlaintext {
     pub fn new(params: &Arc<BfvParameters>, pt: Vec<u64>) -> Self {
-        let mut poly = Poly::zero(&params.poly_ctx);
+        let mut poly = Poly::zero(&params.pt_poly_ctx);
         poly.coeffs
             .iter_mut()
             .zip(pt.iter().map(|v| *v % params.t))
-            .for_each(|(c, v)| *c = params.poly_ctx.moduli.convert(v));
+            .for_each(|(c, v)| *c = v);
 
         BfvPlaintext {
             params: params.clone(),
@@ -195,8 +200,8 @@ mod tests {
         let params = Arc::new(BfvParameters::default());
         let sk = BfvSecretKey::new(&params);
         let pk = BfvPublicKey::new(&sk);
-        let pt = BfvPlaintext::new(&params, vec![1, 2, 3, 2]);
-        let ct = pk.encrypt(&pt);
+        let pt = BfvPlaintext::new(&params, vec![3, 3, 3, 2]);
+        let ct = pk.encrypt(&pt.poly.coeffs.into());
         let pt2 = sk.decrypt(&ct);
         assert_eq!(pt.values.into_vec(), pt2);
     }

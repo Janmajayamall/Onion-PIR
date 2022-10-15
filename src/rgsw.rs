@@ -1,7 +1,10 @@
+use rand_distr::num_traits::ToPrimitive;
+
 use super::bfv::BfvCipherText;
 use crate::{
     bfv::{BfvPlaintext, BfvPublicKey, BfvSecretKey},
     poly::Poly,
+    utils::num_of_windows,
 };
 
 /// Key switching key
@@ -45,7 +48,7 @@ impl Ksk {
             // encrypt under new_sk
             let pt = &curr_sk.poly * (q_ref / beta.pow(index as u32));
             let pt = BfvPlaintext::new(&new_sk.params, pt.coeffs.into());
-            new_pk.encrypt(&pt)
+            new_pk.encrypt(&pt.poly.coeffs)
         });
 
         Self {
@@ -59,7 +62,7 @@ impl Ksk {
     }
 
     pub fn key_switch(ksk: &Ksk, ct: BfvCipherText) -> BfvCipherText {
-        let a_decomposed = ct.c[1].decompose(ksk.beta);
+        let a_decomposed = ct.c[1].decompose(ksk.beta, ksk.l);
 
         debug_assert!(a_decomposed.len() == ksk.cts.len());
 
@@ -80,10 +83,7 @@ impl Ksk {
             );
 
         // RLWE encryption of `b` under new_sk
-        let b_under_new_sk = ksk.new_pk.encrypt(&BfvPlaintext::new(
-            &ksk.new_pk.params,
-            ct.c[0].coeffs.clone(),
-        ));
+        let b_under_new_sk = ksk.new_pk.encrypt(&ct.c[0].coeffs);
 
         // (/delta * M) + E_old = B - (A * S_curr)
         // Thus homomorphic computation of `B - (A * S_curr)` under new_sk
@@ -173,19 +173,63 @@ impl Ksk {
 ///     ]
 /// ]
 /// E (2l X 2)
+#[derive(Debug)]
 pub struct Rgsw {
     cts: Vec<Vec<BfvCipherText>>,
     beta: u64,
+    l: u64,
 }
 
 impl Rgsw {
-    pub fn l(&self) -> u64 {
-        let q = self.cts[0][0].params.q;
-        ((q as f64).log2() / (self.beta as f64).log2()) as u64
+    pub fn new(cts: Vec<Vec<BfvCipherText>>, beta: u64, l: u64) -> Self {
+        Self { cts, beta, l }
     }
 
-    pub fn new(cts: Vec<Vec<BfvCipherText>>, beta: u64) -> Self {
-        Self { cts, beta }
+    pub fn encrypt(sk: &BfvSecretKey, m: &BfvPlaintext, beta: u64, l: u64) -> Self {
+        assert!(sk.params == m.params);
+
+        let pk = BfvPublicKey::new(sk);
+
+        let params = sk.params.clone();
+        let q = sk.params.q;
+
+        // We need to switch poly context of `sk`
+        // from cipher space to pt space of `m`.
+        let m_poly = &m.poly.clone();
+        let mut sk_poly = sk.poly.clone();
+        sk_poly.switch_context(&m.poly.ctx);
+        let nsm_poly = &-(&sk_poly * m_poly);
+
+        let nsm_rlev = (1..(l + 1))
+            .into_iter()
+            .map(|i| {
+                let coeff = (q as f64 / beta.pow(i as u32).to_f64().unwrap()) as u64;
+
+                // scale `message` by coeff
+                let mut m = nsm_poly.coeffs.clone();
+                m.iter_mut()
+                    .for_each(|v| *v = params.pt_poly_ctx.moduli.mul_mod(*v, coeff % params.t));
+
+                pk.encrypt(&m)
+            })
+            .rev()
+            .collect();
+
+        let m_rlev = (1..(l + 1))
+            .into_iter()
+            .map(|i| {
+                let coeff = ((q as f64 / beta.pow(i as u32) as f64) as u64) % params.t;
+
+                let mut m = m_poly.coeffs.clone();
+                m.iter_mut()
+                    .for_each(|v| *v = params.pt_poly_ctx.moduli.mul_mod(*v, coeff));
+
+                pk.encrypt(&m)
+            })
+            .rev()
+            .collect();
+
+        Rgsw::new(vec![nsm_rlev, m_rlev], beta, l)
     }
 
     pub fn external_product(rgsw: &Rgsw, rlwe: &BfvCipherText) -> BfvCipherText {
@@ -193,8 +237,8 @@ impl Rgsw {
         // (1) Decompose B and A of rlwe into B` and A`
         // (2) Perform <B`, RGWS[1]> and <A`, RGSW[0]>
 
-        let b_decomposed = rlwe.c[0].decompose(rgsw.beta);
-        let a_decomposed = rlwe.c[1].decompose(rgsw.beta);
+        let b_decomposed = rlwe.c[0].decompose(rgsw.beta, rgsw.l);
+        let a_decomposed = rlwe.c[1].decompose(rgsw.beta, rgsw.l);
 
         debug_assert!(b_decomposed.len() == rgsw.cts[1].len());
         debug_assert!(a_decomposed.len() == rgsw.cts[0].len());
@@ -226,5 +270,57 @@ impl Rgsw {
             );
 
         BfvCipherText::add_ciphertexts(&bm, &n_asm)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use crate::{
+        bfv::{BfvParameters, BfvPlaintext, BfvPublicKey, BfvSecretKey},
+        poly::{Context, Modulus},
+    };
+
+    use super::*;
+
+    #[test]
+    fn encrypt() {
+        let params = Arc::new(BfvParameters::default());
+        let beta = 16;
+        let l = 4;
+        let sk = BfvSecretKey::new(&params);
+
+        let m = BfvPlaintext::new(&params, vec![1, 2, 3, 3]);
+
+        let rgsw_ct = Rgsw::encrypt(&sk, &m, beta, l);
+
+        let check = rgsw_ct.cts[1][0].clone();
+        let pt = sk.decrypt(&check);
+        dbg!(pt);
+    }
+
+    #[test]
+    fn external_product() {
+        let params = Arc::new(BfvParameters::default());
+        let beta = 4;
+        let l = 4;
+
+        let sk = BfvSecretKey::new(&params);
+        let pk = BfvPublicKey::new(&sk);
+
+        let m1 = vec![1, 2, 3, 3];
+        let m2 = vec![1, 3, 3, 3];
+
+        let m1 = BfvPlaintext::new(&params, m1);
+        let m2 = BfvPlaintext::new(&params, m2);
+        let expected_product = &m1.poly * &m2.poly;
+
+        let rgsw_m2 = Rgsw::encrypt(&sk, &m2, beta, l);
+        let rlwe_m1 = pk.encrypt(&m1.poly.coeffs);
+
+        let product = Rgsw::external_product(&rgsw_m2, &rlwe_m1);
+        let product = sk.decrypt(&product);
+        dbg!(product);
     }
 }

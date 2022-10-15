@@ -30,3 +30,7 @@ pub fn mod_inverse(v: u64, q: u64) -> Option<u64> {
     let q = BigUint::from_u64(q).unwrap();
     v.mod_inverse(q)?.to_u64()
 }
+
+pub fn num_of_windows(q: u64, base: u64) -> u64 {
+    ((q as f64).log2() / (base as f64).log2()).ceil() as u64
+}
