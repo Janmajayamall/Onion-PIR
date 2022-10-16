@@ -1,8 +1,9 @@
 use crate::poly::Modulus;
+use num_traits::cast::ToPrimitive;
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
-use rand_distr::num_traits::ToPrimitive;
 
+#[derive(Debug)]
 struct NttOperator {
     p: Modulus,
     p_twice: u64,
@@ -23,24 +24,25 @@ impl NttOperator {
 
         let omega = primitive_root(2 * size, p);
         let omega_inv = p.inv(omega);
-        let powers = Vec::with_capacity(size + 1);
-        let powers_inv = Vec::with_capacity(size + 1);
+
+        let mut powers = Vec::with_capacity(size + 1);
+        let mut powers_inv = Vec::with_capacity(size + 1);
         let mut v = 1u64;
         let mut v_inv = 1u64;
         (0..(size + 1)).into_iter().for_each(|_| {
             powers.push(v);
             powers_inv.push(v_inv);
             v = p.mul(v, omega);
-            v_inv = p.mul(v_inv, omega);
+            v_inv = p.mul(v_inv, omega_inv);
         });
 
-        let omegas = Vec::with_capacity(size);
-        let omegas_inv = Vec::with_capacity(size);
-        let zetas_inv = Vec::with_capacity(size);
+        let mut omegas = Vec::with_capacity(size);
+        let mut omegas_inv = Vec::with_capacity(size);
+        let mut zetas_inv = Vec::with_capacity(size);
         (0..size).into_iter().for_each(|i| {
             // this arranges powers of omegas in desired
             // sequence as we access them in ntt transformation
-            let j = i.reverse_bits() - (size.leading_zeros() + 1) as usize;
+            let j = i.reverse_bits() >> (size.leading_zeros() + 1) as usize;
             omegas.push(powers[j]);
             omegas_inv.push(powers_inv[j]);
             zetas_inv.push(powers_inv[j + 1]);
@@ -122,9 +124,9 @@ impl NttOperator {
 
         let a_ptr = a.as_mut_ptr();
 
-        let k = 0;
-        let m = self.size >> 1;
-        let l = 1;
+        let mut k = 0;
+        let mut m = self.size >> 1;
+        let mut l = 1;
 
         while m > 0 {
             for i in 0..m {
@@ -136,12 +138,30 @@ impl NttOperator {
 
                     for j in s..(s + l) {
                         self.butterfly_inv(
-                            &mut *a_ptr.add(s),
-                            &mut *a_ptr.add(s + l),
+                            &mut *a_ptr.add(j),
+                            &mut *a_ptr.add(j + l),
                             zeta_inv,
                             zeta_inv_shoup,
                         )
                     }
+                    // match l {
+                    //     1 => self.butterfly_inv(
+                    //         &mut *a_ptr.add(s),
+                    //         &mut *a_ptr.add(s + l),
+                    //         zeta_inv,
+                    //         zeta_inv_shoup,
+                    //     ),
+                    //     _ => {
+                    //         for j in s..(s + l) {
+                    //             self.butterfly_inv(
+                    //                 &mut *a_ptr.add(j),
+                    //                 &mut *a_ptr.add(j + l),
+                    //                 zeta_inv,
+                    //                 zeta_inv_shoup,
+                    //             )
+                    //         }
+                    //     }
+                    // }
                 }
             }
             l <<= 1;
@@ -149,7 +169,8 @@ impl NttOperator {
         }
 
         a.iter_mut().for_each(|ainv| {
-            self.p
+            *ainv = self
+                .p
                 .lazy_mul_shoup(*ainv, self.size_inv, self.size_inv_shoup);
         });
     }
@@ -181,7 +202,7 @@ impl NttOperator {
         debug_assert!(z_inv_shoup == self.p.shoup(z_inv));
 
         let t = *x;
-        *x = Modulus::reduce_ct(*y + t, self.p.p);
+        *x = Modulus::reduce_ct(*y + t, self.p_twice);
         *y = self
             .p
             .lazy_mul_shoup(self.p_twice + t - *y, z_inv, z_inv_shoup);
@@ -212,9 +233,11 @@ fn primitive_root(n: usize, p: &Modulus) -> u64 {
     let lambda = (p.p - 1) / (2 * n as u64);
 
     let mut rng: ChaCha8Rng = SeedableRng::seed_from_u64(0);
+
     for _ in 0..100 {
         let mut root = rng.gen_range(0..p.p);
         root = p.pow(root, lambda);
+
         if is_primitive_root(root, 2 * n, p) {
             return root;
         }
@@ -241,4 +264,37 @@ fn reduce_4p(a: u64, p: &Modulus) -> u64 {
     debug_assert!(a < p.p * 4);
     let r = Modulus::reduce_ct(a, 2 * p.p);
     Modulus::reduce_ct(r, p.p)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rand::thread_rng;
+
+    #[test]
+    fn construct_ntt_operator() {
+        for n in [8, 1024] {
+            for q in [1153, 4611686018326724609] {
+                let moduli = Modulus::new(q);
+                let _ = NttOperator::new(&moduli, n);
+            }
+        }
+    }
+
+    #[test]
+    fn bijection() {
+        let mut rng = thread_rng();
+        for n in [1024] {
+            for q in [4611686018326724609] {
+                let moduli = Modulus::new(q);
+                let operator = NttOperator::new(&moduli, n);
+
+                let mut poly = moduli.random_vec(n, &mut rng);
+                let poly_clone = poly.clone();
+                operator.forward(&mut poly);
+                operator.backward(&mut poly);
+                assert_eq!(poly[0], poly_clone[0]);
+            }
+        }
+    }
 }

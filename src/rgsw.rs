@@ -297,7 +297,6 @@ mod tests {
 
         let check = rgsw_ct.cts[1][0].clone();
         let pt = sk.decrypt(&check);
-        dbg!(pt);
     }
 
     #[test]
@@ -321,6 +320,5 @@ mod tests {
 
         let product = Rgsw::external_product(&rgsw_m2, &rlwe_m1);
         let product = sk.decrypt(&product);
-        dbg!(product);
     }
 }

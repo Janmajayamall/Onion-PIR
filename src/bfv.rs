@@ -61,7 +61,6 @@ impl BfvSecretKey {
 
     pub fn decrypt(&self, ct: &BfvCipherText) -> Vec<u64> {
         let mut poly = &ct.c[1] * &self.poly + ct.c[0].clone();
-        dbg!(&poly.coeffs);
         poly.coeffs
             .iter_mut()
             .for_each(|c| *c = ((*c * self.params.t) as f64 / self.params.q as f64).round() as u64);
