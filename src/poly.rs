@@ -74,7 +74,7 @@ impl Modulus {
     /// Ref:
     /// (1) https://github.com/Janmajayamall/fhe.rs/blob/8aafe4396d0b771e6aa25257c7daa61c109eb367/crates/fhe-math/src/zq/mod.rs#L582
     /// (2) https://github.com/hacspec/rust-secret-integers/blob/master/src/lib.rs#L351-L366.
-    const fn reduce_ct(x: u64, p: u64) -> u64 {
+    pub const fn reduce_ct(x: u64, p: u64) -> u64 {
         debug_assert!(p >> 63 == 0);
         debug_assert!(x < 2 * p);
 
@@ -89,6 +89,45 @@ impl Modulus {
 
         debug_assert!(r == x % p);
         r
+    }
+
+    /// Modulus exponentiation
+    ///
+    /// (a ** r) mod p
+    pub fn pow(&self, a: u64, r: u64) -> u64 {
+        debug_assert!(a < self.p && r < self.p);
+
+        if r == 0 {
+            return 1;
+        } else if r == 1 {
+            return a;
+        }
+
+        let bits = 62 - r.leading_zeros();
+
+        let mut val = a;
+        while bits >= 0 {
+            val = self.mul(val, val);
+
+            if r >> bits & 1 == 1 {
+                val = self.mul(val, a);
+            }
+
+            bits -= 1;
+        }
+
+        val
+    }
+
+    /// Modulus Inverse
+    ///
+    /// Remember p is prime. Therefore,
+    /// a^(m-2) = a^(-1) mod m
+    ///
+    /// https://cp-algorithms.com/algebra/module-inverse.html#finding-the-modular-inverse-using-binary-exponentiation
+    pub fn inv(&self, a: u64) -> u64 {
+        debug_assert!(a < self.p && a != 0);
+        self.pow(a, self.p - 2)
     }
 
     fn reduce(&self, a: u64) -> u64 {
@@ -118,7 +157,7 @@ impl Modulus {
         Self::reduce_ct(a + (self.p - b), self.p)
     }
 
-    fn mul(&self, a: u64, b: u64) -> u64 {
+    pub fn mul(&self, a: u64, b: u64) -> u64 {
         debug_assert!(a < self.p);
         debug_assert!(b < self.p);
         self.reduce_128((a as u128) * (b as u128))
@@ -127,6 +166,38 @@ impl Modulus {
     fn neg(&self, a: u64) -> u64 {
         debug_assert!(a < self.p);
         Self::reduce_ct(self.p - a, self.p)
+    }
+
+    /// Shoup representation of value
+    ///
+    /// a / (p * 2^64)
+    ///
+    /// TODO: Understand math behind shoup repr
+    pub fn shoup(&self, a: u64) -> u64 {
+        debug_assert!(a < self.p);
+        (((a as u128) << 64) / (self.p as u128)) as u64
+    }
+
+    pub fn shoup_vec(&self, vals: &[u64]) -> Vec<u64> {
+        vals.into_iter().map(|v| self.shoup(*v)).collect()
+    }
+
+    /// Lazy shoup multiplication of a, b in ct
+    ///
+    /// returns product in range [0, 2p)
+    pub fn lazy_mul_shoup(&self, a: u64, b: u64, b_shoup: u64) -> u64 {
+        debug_assert!(a < self.p);
+        debug_assert!(b < self.p);
+        debug_assert!(b_shoup == self.shoup(b));
+
+        // b_shoup = b / (p * 2^64)
+        // q = a * b_shoup = ((a * b) * 2^64) / (p * 2^64) = (a * b) / p
+        let q = ((a as u128) * (b_shoup as u128)) << 64;
+        let r = (((a as u128) * (b as u128)) - (q * (self.p as u128))) as u64;
+
+        debug_assert!(r < self.p * 2);
+
+        r
     }
 }
 

@@ -106,6 +106,7 @@ version = "0.1.0"
 dependencies = [
  "num-bigint-dig",
  "rand",
+ "rand_chacha",
  "rand_distr",
 ]
 
