@@ -9,7 +9,11 @@ struct NttOperator {
     omegas: Vec<u64>,
     omegas_inv: Vec<u64>,
     omegas_shoup: Vec<u64>,
+    zetas_inv: Vec<u64>,
+    zetas_inv_shoup: Vec<u64>,
     size: usize,
+    size_inv: u64,
+    size_inv_shoup: u64,
 }
 
 impl NttOperator {
@@ -32,15 +36,21 @@ impl NttOperator {
 
         let omegas = Vec::with_capacity(size);
         let omegas_inv = Vec::with_capacity(size);
+        let zetas_inv = Vec::with_capacity(size);
         (0..size).into_iter().for_each(|i| {
             // this arranges powers of omegas in desired
             // sequence as we access them in ntt transformation
             let j = i.reverse_bits() - (size.leading_zeros() + 1) as usize;
             omegas.push(powers[j]);
             omegas_inv.push(powers_inv[j]);
+            zetas_inv.push(powers_inv[j + 1]);
         });
 
         let omegas_shoup = p.shoup_vec(&omegas);
+        let zetas_inv_shoup = p.shoup_vec(&zetas_inv);
+
+        let size_inv = p.inv(size as u64);
+        let size_inv_shoup = p.shoup(size_inv);
 
         Self {
             p: p.clone(),
@@ -49,6 +59,10 @@ impl NttOperator {
             omegas_inv,
             omegas_shoup,
             size,
+            size_inv,
+            size_inv_shoup,
+            zetas_inv,
+            zetas_inv_shoup,
         }
     }
 
@@ -103,6 +117,43 @@ impl NttOperator {
         }
     }
 
+    fn backward(&self, a: &mut [u64]) {
+        assert!(a.len() == self.size);
+
+        let a_ptr = a.as_mut_ptr();
+
+        let k = 0;
+        let m = self.size >> 1;
+        let l = 1;
+
+        while m > 0 {
+            for i in 0..m {
+                let s = 2 * i * l;
+                unsafe {
+                    let zeta_inv = *self.zetas_inv.get_unchecked(k);
+                    let zeta_inv_shoup = *self.zetas_inv_shoup.get_unchecked(k);
+                    k += 1;
+
+                    for j in s..(s + l) {
+                        self.butterfly_inv(
+                            &mut *a_ptr.add(s),
+                            &mut *a_ptr.add(s + l),
+                            zeta_inv,
+                            zeta_inv_shoup,
+                        )
+                    }
+                }
+            }
+            l <<= 1;
+            m >>= 1;
+        }
+
+        a.iter_mut().for_each(|ainv| {
+            self.p
+                .lazy_mul_shoup(*ainv, self.size_inv, self.size_inv_shoup);
+        });
+    }
+
     /// Harvey NTT butterfly
     ///
     /// Ref -
@@ -121,6 +172,22 @@ impl NttOperator {
 
         debug_assert!(*x < self.p.p * 4);
         debug_assert!(*y < self.p.p * 4);
+    }
+
+    fn butterfly_inv(&self, x: &mut u64, y: &mut u64, z_inv: u64, z_inv_shoup: u64) {
+        debug_assert!(*x < self.p_twice);
+        debug_assert!(*y < self.p_twice);
+        debug_assert!(z_inv < self.p.p);
+        debug_assert!(z_inv_shoup == self.p.shoup(z_inv));
+
+        let t = *x;
+        *x = Modulus::reduce_ct(*y + t, self.p.p);
+        *y = self
+            .p
+            .lazy_mul_shoup(self.p_twice + t - *y, z_inv, z_inv_shoup);
+
+        debug_assert!(*x < self.p_twice);
+        debug_assert!(*y < self.p_twice);
     }
 }
 
