@@ -1,58 +1,72 @@
+use itertools::ProcessResults;
+use rand::{thread_rng, Rng, SeedableRng};
+use rand_chacha::ChaCha8Rng;
+
+use crate::rq::{Poly, Representation, RqContext};
+use crate::{
+    poly::{Context, Modulus},
+    utils::sample_vec_cbd,
+};
 use std::sync::Arc;
-
-use crate::poly::{Context, Modulus};
-
-use super::poly::Poly;
 
 #[derive(Debug, PartialEq)]
 pub struct BfvParameters {
-    pub t: u64,
-    pub q: u64,
-    pub n: usize,
-    pub st_dev: f64,
-    pub poly_ctx: Arc<Context>,
-    pub pt_poly_ctx: Arc<Context>,
-}
+    polynomial_degree: usize,
 
-impl Default for BfvParameters {
-    fn default() -> Self {
-        let t = 4;
-        let q: u64 = 65536;
-        let degree: usize = 4;
-        let ctx = Context::new(Modulus { q }, degree);
-        let pt_ctx = Context::new(Modulus { q: t }, degree);
-        Self {
-            t,
-            q,
-            n: degree,
-            st_dev: 3.2,
-            poly_ctx: Arc::new(ctx),
-            pt_poly_ctx: Arc::new(pt_ctx),
-        }
-    }
+    plaintext_modulus_64: u64,
+    plaintext_modulus: Modulus,
+
+    ciphertext_moduli: Vec<u64>,
+    rq_context: Arc<RqContext>,
+
+    /// Error variance
+    variance: isize,
 }
 
 #[derive(Debug)]
-pub struct BfvSecretKey {
+pub struct SecretKey {
     pub params: Arc<BfvParameters>,
-    pub poly: Poly,
+    coeffs: Box<[i64]>,
 }
 
-impl BfvSecretKey {
+impl SecretKey {
     pub fn new(params: &Arc<BfvParameters>) -> Self {
-        let mut sk = Poly::random_gaussian(
-            &Arc::new(Context::new(Modulus { q: 2 }, params.n)),
-            params.st_dev,
-        );
-        sk.switch_context(&params.poly_ctx);
+        let coeffs = sample_vec_cbd(params.polynomial_degree, params.variance).into_boxed_slice();
+
         Self {
             params: params.clone(),
-            poly: sk,
+            coeffs,
         }
     }
 
+    pub fn encrypt(&self) {
+        let mut sk = Poly::try_from_vec_i64(&self.params.rq_context, &self.coeffs);
+        sk.change_representation(Representation::Ntt);
+
+        let mut e = Poly::random_small(
+            &self.params.rq_context,
+            Representation::Ntt,
+            self.params.variance,
+        );
+
+        let mut seed = <ChaCha8Rng as SeedableRng>::Seed::default();
+        thread_rng().fill(&mut seed);
+        let mut a = Poly::random_from_seed(&self.params.rq_context, Representation::Ntt, seed);
+    }
+}
+
+impl BfvSecretKey {
+    pub fn new(params: &Arc<BfvParameters>) -> Self {}
+
+    pub fn encrypt() {
+        // 1. convert sk to Rq
+        // 2. Sample error in Rq
+        // 3. scale message polynomial
+        // 4. encrypt
+    }
+
     pub fn new_with_poly(params: &Arc<BfvParameters>, mut poly: Poly) -> Self {
-        poly.switch_context(&params.poly_ctx);
+        poly.switch_context(&params.rq_context);
         Self {
             params: params.clone(),
             poly,

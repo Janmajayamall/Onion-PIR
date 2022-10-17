@@ -1,7 +1,9 @@
-use crate::{ntt::NttOperator, poly::Modulus, rns::RnsContext};
+use crate::{ntt::NttOperator, poly::Modulus, rns::RnsContext, utils::sample_vec_cbd};
 use itertools::izip;
 use ndarray::Array2;
-use rand::{CryptoRng, RngCore};
+use rand::{CryptoRng, RngCore, SeedableRng};
+use rand_chacha::ChaCha8Rng;
+use sha2::{Digest, Sha256};
 use std::{
     ops::{AddAssign, MulAssign, SubAssign},
     sync::Arc,
@@ -33,13 +35,13 @@ impl RqContext {
 }
 
 #[derive(Debug, PartialEq)]
-enum Representation {
+pub enum Representation {
     PowerBasis,
     Ntt,
     NttShoup,
 }
 
-struct Poly {
+pub struct Poly {
     context: Arc<RqContext>,
     representation: Representation,
     coefficients: Array2<u64>,
@@ -104,6 +106,51 @@ impl Poly {
                     .copy_from_slice(q.random_vec(ctx.degree, rng).as_slice())
             },
         );
+        poly
+    }
+
+    ///
+    /// Ref - https://github.com/Janmajayamall/fhe.rs/blob/8aafe4396d0b771e6aa25257c7daa61c109eb367/crates/fhe-math/src/rq/mod.rs#L243
+    pub fn random_from_seed(
+        ctx: &Arc<RqContext>,
+        representation: Representation,
+        seed: <ChaCha8Rng as SeedableRng>::Seed,
+    ) {
+        // hash seed into a ChaCha8Rng seed.
+        let mut hasher = Sha256::new();
+        hasher.update(seed);
+
+        let mut prng =
+            ChaCha8Rng::from_seed(<ChaCha8Rng as SeedableRng>::Seed::from(hasher.finalize()));
+    }
+
+    pub fn random_small(
+        ctx: &Arc<RqContext>,
+        representation: Representation,
+        variance: isize,
+    ) -> Poly {
+        let poly = Poly::zero(&ctx, Representation::PowerBasis);
+        let values = sample_vec_cbd(ctx.degree, variance);
+        let mut poly = Poly::try_from_vec_i64(ctx, values.as_slice());
+        poly.change_representation(representation);
+        poly
+    }
+
+    pub fn try_from_vec_u64(ctx: &Arc<RqContext>, a: &[u64]) -> Poly {
+        let mut poly = Poly::zero(ctx, Representation::PowerBasis);
+        izip!(poly.coefficients.outer_iter_mut(), ctx.moduli.iter()).for_each(|(coeffs, q)| {
+            let coeffs = coeffs.as_slice_mut().unwrap();
+            coeffs[..a.len()].copy_from_slice(&q.reduce_vec_u64(a))
+        });
+        poly
+    }
+
+    pub fn try_from_vec_i64(ctx: &Arc<RqContext>, a: &[i64]) -> Poly {
+        let mut poly = Poly::zero(ctx, Representation::PowerBasis);
+        izip!(poly.coefficients.outer_iter_mut(), ctx.moduli.iter()).for_each(|(coeffs, q)| {
+            let coeffs = coeffs.as_slice_mut().unwrap();
+            coeffs[..a.len()].copy_from_slice(&q.reduce_vec_i64(a))
+        });
         poly
     }
 }

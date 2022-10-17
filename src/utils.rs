@@ -1,14 +1,12 @@
-use std::mem::size_of;
-
 use num_bigint_dig::{BigUint, ModInverse};
+use rand::{CryptoRng, RngCore};
 use rand_distr::{
     num_traits::{FromPrimitive, PrimInt, ToPrimitive},
     Distribution, Normal, Uniform,
 };
-pub fn sample_gaussian_vec(size: usize, std_dev: f64) -> Vec<f64> {
-    let normal = Normal::new(0 as f64, std_dev).unwrap();
-    let mut rng = rand::thread_rng();
-    normal.sample_iter(&mut rng).take(size).collect()
+use std::mem::size_of;
+pub fn sample_vec_cbd(size: usize, variance: isize) -> Vec<i64> {
+    todo!()
 }
 
 pub fn sample_uniform_vec(size: usize, max: u64) -> Vec<u64> {

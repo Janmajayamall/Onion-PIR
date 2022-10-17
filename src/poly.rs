@@ -1,5 +1,5 @@
 use itertools::izip;
-use itertools::zip;
+use itertools::Itertools;
 use num_bigint::BigUint;
 use num_traits::cast::ToPrimitive;
 use rand::{distributions::Uniform, CryptoRng, Rng, RngCore};
@@ -96,6 +96,19 @@ impl Modulus {
 
     fn reduce_128(&self, a: u128) -> u64 {
         Self::reduce_ct(self.lazy_reduce_u128(a), self.p)
+    }
+
+    /// Ref - https://github.com/Janmajayamall/fhe.rs/blob/8aafe4396d0b771e6aa25257c7daa61c109eb367/crates/fhe-math/src/zq/mod.rs#L426
+    fn reduce_i64(&self, a: i64) -> u64 {
+        self.reduce_128((((self.p as i128) << 64) + (a as i128)) as u128)
+    }
+
+    pub fn reduce_vec_u64(&self, a: &[u64]) -> Vec<u64> {
+        a.iter().map(|ar| self.reduce(*ar)).collect_vec()
+    }
+
+    pub fn reduce_vec_i64(&self, a: &[i64]) -> Vec<u64> {
+        a.iter().map(|ar| self.reduce_i64(*ar)).collect()
     }
 
     /// Modulus exponentiation
