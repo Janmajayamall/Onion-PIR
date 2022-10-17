@@ -4,7 +4,7 @@ use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 
 #[derive(Debug)]
-struct NttOperator {
+pub struct NttOperator {
     p: Modulus,
     p_twice: u64,
     omegas: Vec<u64>,
@@ -40,7 +40,7 @@ impl NttOperator {
         let mut omegas_inv = Vec::with_capacity(size);
         let mut zetas_inv = Vec::with_capacity(size);
         (0..size).into_iter().for_each(|i| {
-            // this arranges powers of omegas in desired
+            // this arranges powers of omegas, zetas_inv in desired
             // sequence as we access them in ntt transformation
             let j = i.reverse_bits() >> (size.leading_zeros() + 1) as usize;
             omegas.push(powers[j]);
@@ -119,7 +119,7 @@ impl NttOperator {
         }
     }
 
-    fn backward(&self, a: &mut [u64]) {
+    pub fn backward(&self, a: &mut [u64]) {
         assert!(a.len() == self.size);
 
         let a_ptr = a.as_mut_ptr();
@@ -144,34 +144,16 @@ impl NttOperator {
                             zeta_inv_shoup,
                         )
                     }
-                    // match l {
-                    //     1 => self.butterfly_inv(
-                    //         &mut *a_ptr.add(s),
-                    //         &mut *a_ptr.add(s + l),
-                    //         zeta_inv,
-                    //         zeta_inv_shoup,
-                    //     ),
-                    //     _ => {
-                    //         for j in s..(s + l) {
-                    //             self.butterfly_inv(
-                    //                 &mut *a_ptr.add(j),
-                    //                 &mut *a_ptr.add(j + l),
-                    //                 zeta_inv,
-                    //                 zeta_inv_shoup,
-                    //             )
-                    //         }
-                    //     }
-                    // }
                 }
             }
             l <<= 1;
             m >>= 1;
         }
 
-        a.iter_mut().for_each(|ainv| {
-            *ainv = self
+        a.iter_mut().for_each(|a_inv| {
+            *a_inv = self
                 .p
-                .lazy_mul_shoup(*ainv, self.size_inv, self.size_inv_shoup);
+                .lazy_mul_shoup(*a_inv, self.size_inv, self.size_inv_shoup);
         });
     }
 

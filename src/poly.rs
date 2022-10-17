@@ -1,3 +1,5 @@
+use itertools::izip;
+use itertools::zip;
 use num_bigint::BigUint;
 use num_traits::cast::ToPrimitive;
 use rand::{distributions::Uniform, CryptoRng, Rng, RngCore};
@@ -153,9 +155,21 @@ impl Modulus {
         self.reduce_128((a as u128) * (b as u128))
     }
 
-    fn neg(&self, a: u64) -> u64 {
+    pub fn neg(&self, a: u64) -> u64 {
         debug_assert!(a < self.p);
         Self::reduce_ct(self.p - a, self.p)
+    }
+
+    pub fn add_vec(&self, a: &mut [u64], b: &[u64]) {
+        izip!(a, b).for_each(|(ab, b)| *ab = self.add(*ab, *b))
+    }
+
+    pub fn sub_vec(&self, a: &mut [u64], b: &[u64]) {
+        izip!(a, b).for_each(|(ab, b)| *ab = self.sub(*ab, *b))
+    }
+
+    pub fn mul_vec(&self, a: &mut [u64], b: &[u64]) {
+        izip!(a, b).for_each(|(ab, b)| *ab = self.mul(*ab, *b))
     }
 
     /// Shoup representation of value
