@@ -90,11 +90,11 @@ impl Modulus {
         r
     }
 
-    fn reduce(&self, a: u64) -> u64 {
+    pub fn reduce(&self, a: u64) -> u64 {
         Self::reduce_ct(self.lazy_reduce_ct(a), self.p)
     }
 
-    fn reduce_128(&self, a: u128) -> u64 {
+    pub fn reduce_128(&self, a: u128) -> u64 {
         Self::reduce_ct(self.lazy_reduce_u128(a), self.p)
     }
 

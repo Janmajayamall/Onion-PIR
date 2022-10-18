@@ -3,7 +3,7 @@ use num_traits::cast::ToPrimitive;
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct NttOperator {
     p: Modulus,
     p_twice: u64,

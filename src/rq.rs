@@ -5,11 +5,13 @@ use rand::{CryptoRng, RngCore, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 use sha2::{Digest, Sha256};
 use std::{
+    clone,
     ops::{AddAssign, MulAssign, SubAssign},
     sync::Arc,
 };
 
 // Context
+#[derive(Debug, PartialEq, Clone)]
 pub struct RqContext {
     pub moduli_64: Vec<u64>,
     pub moduli: Vec<Modulus>,
@@ -34,17 +36,18 @@ impl RqContext {
     }
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone)]
 pub enum Representation {
     PowerBasis,
     Ntt,
     NttShoup,
 }
 
+#[derive(Clone, Debug)]
 pub struct Poly {
-    context: Arc<RqContext>,
-    representation: Representation,
-    coefficients: Array2<u64>,
+    pub context: Arc<RqContext>,
+    pub representation: Representation,
+    pub coefficients: Array2<u64>,
 }
 
 impl Poly {
@@ -115,13 +118,23 @@ impl Poly {
         ctx: &Arc<RqContext>,
         representation: Representation,
         seed: <ChaCha8Rng as SeedableRng>::Seed,
-    ) {
+    ) -> Poly {
         // hash seed into a ChaCha8Rng seed.
         let mut hasher = Sha256::new();
         hasher.update(seed);
 
         let mut prng =
             ChaCha8Rng::from_seed(<ChaCha8Rng as SeedableRng>::Seed::from(hasher.finalize()));
+        let poly = Poly::zero(ctx, representation);
+        izip!(poly.coefficients.outer_iter_mut(), ctx.moduli.iter()).for_each(
+            |(mut coeff_vec, q)| {
+                coeff_vec
+                    .as_slice_mut()
+                    .unwrap()
+                    .copy_from_slice(q.random_vec(ctx.degree, &mut prng).as_slice())
+            },
+        );
+        poly
     }
 
     pub fn random_small(
