@@ -1,4 +1,4 @@
-use crate::poly::Modulus;
+use crate::{poly::Modulus, utils::is_prime};
 use num_traits::cast::ToPrimitive;
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
@@ -22,7 +22,7 @@ impl NttOperator {
         // check whether params are valid for NttOperator
         assert!(supports_ntt(p.p, size));
 
-        let omega = primitive_root(2 * size, p);
+        let omega = primitive_root(size, p);
         let omega_inv = p.inv(omega);
 
         let mut powers = Vec::with_capacity(size + 1);
@@ -197,15 +197,14 @@ impl NttOperator {
 /// Checks the following for ntt support
 /// 1. p % 2n === 1 (to make sure that 2nth roots of unit exist and can be precalculated (https://eprint.iacr.org/2017/727))
 /// 2. `p` is prime
-/// 3. n is power of 2 and greater than 8
+/// 3. n is power of 2 and greater than or equal to 8
 ///
 /// TODO: Add is_prim check
 fn supports_ntt(p: u64, n: usize) -> bool {
-    if !n.is_power_of_two() || n <= 8 {
+    if !n.is_power_of_two() || n < 8 {
         return false;
     }
-
-    (p % (n << 1).to_u64().unwrap()) == 1
+    (p % ((n as u64) << 1)) == 1 && is_prime(p)
 }
 
 /// Finds and returns 2n-th primitive root modulo p
@@ -219,7 +218,6 @@ fn primitive_root(n: usize, p: &Modulus) -> u64 {
     for _ in 0..100 {
         let mut root = rng.gen_range(0..p.p);
         root = p.pow(root, lambda);
-
         if is_primitive_root(root, 2 * n, p) {
             return root;
         }
@@ -255,12 +253,17 @@ mod tests {
 
     #[test]
     fn construct_ntt_operator() {
-        for n in [8, 1024] {
-            for q in [1153, 4611686018326724609] {
-                let moduli = Modulus::new(q);
-                let _ = NttOperator::new(&moduli, n);
-            }
-        }
+        // for n in [8, 1024] {
+        //     for q in [1153, 4611686018326724609] {
+        //         let moduli = Modulus::new(q);
+        //         let _ = NttOperator::new(&moduli, n);
+        //     }
+        // }
+        let q = 4611686018427387761;
+        let size = 8;
+        let moduli = Modulus::new(q);
+        let root = primitive_root(size, &moduli);
+        dbg!(root);
     }
 
     #[test]

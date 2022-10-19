@@ -7,7 +7,7 @@ edition = "2021"
 
 [dependencies]
 rand = "0.8.5"
-num-bigint-dig = "0.8.1"
+num-bigint-dig = {version = "0.8.1", features = ["prime"]}
 num-bigint = "0.4.3"
 rand_chacha = "0.3.1"
 num-traits = "0.2.15"

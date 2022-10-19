@@ -1,14 +1,15 @@
-use itertools::ProcessResults;
+use ndarray::Axis;
 use num_bigint::BigUint;
 use num_traits::{FromPrimitive, ToPrimitive};
 use rand::{thread_rng, Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
+use rand_distr::Open01;
 
 use crate::rns::ScalingFactor;
 use crate::rq::{Poly, Representation, RqContext, RqScaler};
 use crate::{
     poly::{Context, Modulus},
-    utils::sample_vec_cbd,
+    utils::{generate_prime, sample_vec_cbd},
 };
 use std::sync::Arc;
 
@@ -79,6 +80,37 @@ impl BfvParameters {
             q_mod_t,
         }
     }
+
+    pub fn default(num_of_moduli: usize, degree: usize) -> BfvParameters {
+        let moduli = BfvParameters::generate_moduli(&vec![62usize; num_of_moduli], degree).unwrap();
+        BfvParameters::new(degree, 1153u64, moduli, 10)
+    }
+
+    /// Generate ciphertext moduli with the specified sizes
+    ///
+    /// Ref - https://github.com/tlepoint/fhe.rs/blob/b573138d682e69c3553c2e4ae4a1b7f7a65dbe5d/crates/fhe/src/bfv/parameters.rs#L281
+    fn generate_moduli(moduli_sizes: &[usize], degree: usize) -> Option<Vec<u64>> {
+        let mut moduli = vec![];
+        for size in moduli_sizes {
+            assert!(*size <= 62 && *size >= 10);
+
+            let mut upper_bound = 1 << size;
+            loop {
+                if let Some(prime) = generate_prime(*size, 2 * degree as u64, upper_bound) {
+                    if !moduli.contains(&prime) {
+                        moduli.push(prime);
+                        break;
+                    } else {
+                        upper_bound = prime;
+                    }
+                } else {
+                    return None;
+                }
+            }
+        }
+
+        Some(moduli)
+    }
 }
 
 #[derive(Debug)]
@@ -121,7 +153,7 @@ impl SecretKey {
         self.encrypt_poly(&poly)
     }
 
-    pub fn decrypt(&self, bfvCt: &BfvCipherText) {
+    pub fn decrypt(&self, bfvCt: &BfvCipherText) -> BfvPlaintext {
         let mut sk = Poly::try_from_vec_i64(&bfvCt.cts[0].context, &self.coeffs);
 
         // c[0] = b = -a * sk + e + delta_m
@@ -132,8 +164,26 @@ impl SecretKey {
         sk *= &bfvCt.cts[1];
         m += &sk;
 
-        //
-        self.params.scalar.scale(&m);
+        // We scale `m` by (t/q) scaling factor and switch
+        // its rq context from `R_q` to `R_q{i}`. `R_q{i}`
+        // is any of ct moduli.
+        // i.e. [(t/q)* m ]_r where `r` is one of the `qi`s.
+        m = self.params.scalar.scale(&m);
+        let mut m: Vec<u64> = m
+            .coefficients()
+            .index_axis(Axis(0), 0)
+            .iter()
+            .map(|a| *a + self.params.plaintext_modulus.p)
+            .collect();
+        m = m[..self.params.degree].to_vec();
+        let q = Modulus::new(self.params.ciphertext_moduli[0]);
+        q.reduce_vec_u64(&mut m);
+        self.params.plaintext_modulus.reduce_vec_u64(&mut m);
+
+        BfvPlaintext {
+            params: self.params.clone(),
+            values: m.into_boxed_slice(),
+        }
     }
 }
 
@@ -182,6 +232,16 @@ impl BfvPlaintext {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn encrypt_decrypt() {
+        let params = BfvParameters::default(6, 8);
+    }
+}
+
 // impl BfvCipherText {
 //     pub fn add_ciphertexts(ct0: &BfvCipherText, ct1: &BfvCipherText) -> Self {
 //         debug_assert!(ct0.params == ct1.params);
@@ -223,19 +283,3 @@ impl BfvPlaintext {
 //         BfvCipherText::new(&ct.params, vec![c0, c1])
 //     }
 // }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    // #[test]
-    // fn encrypt_decrypt() {
-    //     let params = Arc::new(BfvParameters::default());
-    //     let sk = BfvSecretKey::new(&params);
-    //     let pk = BfvPublicKey::new(&sk);
-    //     let pt = BfvPlaintext::new(&params, vec![3, 3, 3, 2]);
-    //     let ct = pk.encrypt(&pt.poly.coeffs.into());
-    //     let pt2 = sk.decrypt(&ct);
-    //     assert_eq!(pt.values.into_vec(), pt2);
-    // }
-}

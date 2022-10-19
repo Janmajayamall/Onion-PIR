@@ -1,9 +1,8 @@
-use num_bigint_dig::{BigUint, ModInverse};
+use num_bigint_dig::{prime::probably_prime, BigUint, ModInverse};
 use num_traits::PrimInt;
-use rand::{CryptoRng, RngCore};
 use rand_distr::{
     num_traits::{FromPrimitive, ToPrimitive},
-    Distribution, Normal, Uniform,
+    Distribution, Uniform,
 };
 use std::{
     mem::size_of,
@@ -41,6 +40,48 @@ pub fn num_of_windows(q: u64, base: u64) -> u64 {
 pub fn div_ceil<T: PrimInt>(a: T, b: T) -> T {
     assert!(b != T::zero());
     (a + b - T::one()) / b
+}
+
+// PRIME Functions
+// Ref: https://github.com/tlepoint/fhe.rs/blob/a0287ba3842fcf19b45fd380c56ba7b5e52a387b/crates/fhe-util/src/lib.rs#L0-L1
+
+/// Returns whether the modulus p is prime; this function is 100% accurate.
+pub fn is_prime(p: u64) -> bool {
+    probably_prime(&BigUint::from(p), 0)
+}
+
+/// Generate a `num_bits`-bit prime, congruent to 1 mod `modulo`, strictly
+/// smaller than `upper_bound`. Note that `num_bits` must belong to (10..=62),
+/// and upper_bound must be <= 1 << num_bits.
+pub fn generate_prime(num_bits: usize, modulo: u64, upper_bound: u64) -> Option<u64> {
+    if !(10..=62).contains(&num_bits) {
+        None
+    } else {
+        debug_assert!(
+            (1u64 << num_bits) >= upper_bound,
+            "upper_bound larger than number of bits"
+        );
+
+        let leading_zeros = (64 - num_bits) as u32;
+
+        let mut tentative_prime = upper_bound - 1;
+        while tentative_prime % modulo != 1 && tentative_prime.leading_zeros() == leading_zeros {
+            tentative_prime -= 1
+        }
+
+        while tentative_prime.leading_zeros() == leading_zeros
+            && !is_prime(tentative_prime)
+            && tentative_prime >= modulo
+        {
+            tentative_prime -= modulo
+        }
+
+        if tentative_prime.leading_zeros() == leading_zeros && is_prime(tentative_prime) {
+            Some(tentative_prime)
+        } else {
+            None
+        }
+    }
 }
 
 /// Unsigned 256-bit integer represented as four u64.

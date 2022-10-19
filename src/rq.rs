@@ -6,7 +6,7 @@ use crate::{
 };
 use itertools::izip;
 
-use ndarray::{s, Array2, Axis};
+use ndarray::{s, Array2, ArrayView2, Axis};
 use num_bigint::BigUint;
 use rand::{CryptoRng, RngCore, SeedableRng};
 use rand_chacha::ChaCha8Rng;
@@ -122,11 +122,15 @@ pub enum Representation {
 pub struct Poly {
     pub context: Arc<RqContext>,
     pub representation: Representation,
-    pub coefficients: Array2<u64>,
+    coefficients: Array2<u64>,
 }
 
 impl Poly {
     pub fn new() {}
+
+    pub fn coefficients(&self) -> ArrayView2<u64> {
+        self.coefficients.view()
+    }
 
     pub fn change_representation(&mut self, to: Representation) {
         match self.representation {

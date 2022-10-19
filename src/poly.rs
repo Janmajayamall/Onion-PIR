@@ -99,7 +99,7 @@ impl Modulus {
     }
 
     /// **Warning: this isn't constant time**
-    pub fn reduce_biguint(&self, a: BigUint) -> u64 {
+    pub fn reduce_biguint(&self, a: &BigUint) -> u64 {
         (a % self.p).to_u64().unwrap()
     }
 
@@ -117,7 +117,7 @@ impl Modulus {
     }
 
     pub fn reduce_vec_biguint(&self, a: &[BigUint]) -> Vec<u64> {
-        a.iter().map(|ar| self.reduce_biguint(*ar)).collect()
+        a.iter().map(|ar| self.reduce_biguint(ar)).collect()
     }
 
     /// Modulus exponentiation
