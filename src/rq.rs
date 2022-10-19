@@ -1,6 +1,12 @@
-use crate::{ntt::NttOperator, poly::Modulus, rns::RnsContext, utils::sample_vec_cbd};
+use crate::{
+    ntt::NttOperator,
+    poly::Modulus,
+    rns::{RnsContext, RnsScaler, ScalingFactor},
+    utils::sample_vec_cbd,
+};
 use itertools::izip;
-use ndarray::Array2;
+
+use ndarray::{s, Array2, Axis};
 use rand::{CryptoRng, RngCore, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 use sha2::{Digest, Sha256};
@@ -10,19 +16,87 @@ use std::{
     sync::Arc,
 };
 
+/// Polt scaler
+#[derive(Debug, Clone, PartialEq)]
+pub struct RqScaler {
+    from: Arc<RqContext>,
+    to: Arc<RqContext>,
+    rns_scaler: RnsScaler,
+    scaling_factor: ScalingFactor,
+    number_common_moduli: usize,
+}
+
+impl RqScaler {
+    pub fn new(from: &Arc<RqContext>, to: &Arc<RqContext>, scaling_factor: ScalingFactor) -> Self {
+        assert!(from.degree == to.degree);
+
+        let number_common_moduli = izip!(&from.moduli_64, &to.moduli_64)
+            .into_iter()
+            .fold(0, |acc, (from, to)| if from == to { acc + 1 } else { acc });
+
+        let rns_scaler = RnsScaler::new(&from.rns, &to.rns, scaling_factor.clone());
+        Self {
+            from: from.clone(),
+            to: to.clone(),
+            rns_scaler,
+            scaling_factor,
+            number_common_moduli,
+        }
+    }
+
+    /// Scale a polynomial
+    pub(crate) fn scale(&self, p: &Poly) -> Poly {
+        assert!(p.context.as_ref() == self.from.as_ref());
+        assert!(p.representation == Representation::PowerBasis);
+
+        let mut representation = p.representation.clone();
+        if representation == Representation::NttShoup {
+            representation = Representation::Ntt;
+        }
+
+        let mut new_coefficients = Array2::<u64>::zeros((self.to.moduli.len(), self.to.degree));
+
+        if self.number_common_moduli > 0 {
+            new_coefficients
+                .slice_mut(s![..self.number_common_moduli, ..])
+                .assign(&p.coefficients.slice(s![..self.number_common_moduli, ..]));
+        }
+
+        if self.number_common_moduli < self.to.moduli_64.len() {
+            izip!(
+                new_coefficients
+                    .slice_mut(s![self.number_common_moduli.., ..])
+                    .axis_iter_mut(Axis(1)),
+                p.coefficients.axis_iter(Axis(1))
+            )
+            .for_each(|(new_column, column)| {
+                dbg!(&column);
+                self.rns_scaler
+                    .scale(column, new_column, self.number_common_moduli)
+            });
+        }
+
+        Poly {
+            context: self.to.clone(),
+            coefficients: new_coefficients,
+            representation: Representation::PowerBasis,
+        }
+    }
+}
+
 // Context
 #[derive(Debug, PartialEq, Clone)]
 pub struct RqContext {
     pub moduli_64: Vec<u64>,
     pub moduli: Vec<Modulus>,
-    pub rns: RnsContext,
+    pub rns: Arc<RnsContext>,
     pub ntt_ops: Vec<NttOperator>,
     pub degree: usize,
 }
 
 impl RqContext {
     pub fn new(moduli_64: Vec<u64>, degree: usize) -> Self {
-        let rns = RnsContext::new(moduli_64.clone());
+        let rns = Arc::new(RnsContext::new(moduli_64.clone()));
         let moduli = rns.moduli.clone();
         let ntt_ops = moduli.iter().map(|m| NttOperator::new(m, degree)).collect();
 
@@ -125,7 +199,7 @@ impl Poly {
 
         let mut prng =
             ChaCha8Rng::from_seed(<ChaCha8Rng as SeedableRng>::Seed::from(hasher.finalize()));
-        let poly = Poly::zero(ctx, representation);
+        let mut poly = Poly::zero(ctx, representation);
         izip!(poly.coefficients.outer_iter_mut(), ctx.moduli.iter()).for_each(
             |(mut coeff_vec, q)| {
                 coeff_vec
@@ -151,7 +225,7 @@ impl Poly {
 
     pub fn try_from_vec_u64(ctx: &Arc<RqContext>, a: &[u64]) -> Poly {
         let mut poly = Poly::zero(ctx, Representation::PowerBasis);
-        izip!(poly.coefficients.outer_iter_mut(), ctx.moduli.iter()).for_each(|(coeffs, q)| {
+        izip!(poly.coefficients.outer_iter_mut(), ctx.moduli.iter()).for_each(|(mut coeffs, q)| {
             let coeffs = coeffs.as_slice_mut().unwrap();
             coeffs[..a.len()].copy_from_slice(&q.reduce_vec_u64(a))
         });
@@ -160,7 +234,7 @@ impl Poly {
 
     pub fn try_from_vec_i64(ctx: &Arc<RqContext>, a: &[i64]) -> Poly {
         let mut poly = Poly::zero(ctx, Representation::PowerBasis);
-        izip!(poly.coefficients.outer_iter_mut(), ctx.moduli.iter()).for_each(|(coeffs, q)| {
+        izip!(poly.coefficients.outer_iter_mut(), ctx.moduli.iter()).for_each(|(mut coeffs, q)| {
             let coeffs = coeffs.as_slice_mut().unwrap();
             coeffs[..a.len()].copy_from_slice(&q.reduce_vec_i64(a))
         });

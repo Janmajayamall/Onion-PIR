@@ -38,7 +38,7 @@ impl Modulus {
     /// x - ((r * x) / 2 ^ 2k) * p
     /// k = 64
     ///
-    fn lazy_reduce_ct(&self, a: u64) -> u64 {
+    pub fn lazy_reduce_ct(&self, a: u64) -> u64 {
         let low = (a as u128 * (self.barret_lo as u128)) >> 64;
         let high = a as u128 * (self.barret_hi as u128);
         let num = (high + low) >> 64;
@@ -50,7 +50,7 @@ impl Modulus {
         val as u64
     }
 
-    fn lazy_reduce_u128(&self, a: u128) -> u64 {
+    pub fn lazy_reduce_u128(&self, a: u128) -> u64 {
         let alo = a as u64;
         let ahi = (a >> 64) as u64;
 
@@ -94,13 +94,13 @@ impl Modulus {
         Self::reduce_ct(self.lazy_reduce_ct(a), self.p)
     }
 
-    pub fn reduce_128(&self, a: u128) -> u64 {
+    pub fn reduce_u128(&self, a: u128) -> u64 {
         Self::reduce_ct(self.lazy_reduce_u128(a), self.p)
     }
 
     /// Ref - https://github.com/Janmajayamall/fhe.rs/blob/8aafe4396d0b771e6aa25257c7daa61c109eb367/crates/fhe-math/src/zq/mod.rs#L426
     fn reduce_i64(&self, a: i64) -> u64 {
-        self.reduce_128((((self.p as i128) << 64) + (a as i128)) as u128)
+        self.reduce_u128((((self.p as i128) << 64) + (a as i128)) as u128)
     }
 
     pub fn reduce_vec_u64(&self, a: &[u64]) -> Vec<u64> {
@@ -165,7 +165,7 @@ impl Modulus {
     pub fn mul(&self, a: u64, b: u64) -> u64 {
         debug_assert!(a < self.p);
         debug_assert!(b < self.p);
-        self.reduce_128((a as u128) * (b as u128))
+        self.reduce_u128((a as u128) * (b as u128))
     }
 
     pub fn neg(&self, a: u64) -> u64 {
@@ -219,6 +219,10 @@ impl Modulus {
     pub fn random_vec<R: RngCore + CryptoRng>(&self, size: usize, rng: &mut R) -> Vec<u64> {
         let uniform_dist = Uniform::from(0..self.p);
         rng.sample_iter(uniform_dist).take(size).collect()
+    }
+
+    pub fn modulus(&self) -> u64 {
+        self.p
     }
 }
 

@@ -1,8 +1,11 @@
 use itertools::ProcessResults;
+use num_bigint::BigUint;
+use num_traits::FromPrimitive;
 use rand::{thread_rng, Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 
-use crate::rq::{Poly, Representation, RqContext};
+use crate::rns::ScalingFactor;
+use crate::rq::{Poly, Representation, RqContext, RqScaler};
 use crate::{
     poly::{Context, Modulus},
     utils::sample_vec_cbd,
@@ -11,16 +14,52 @@ use std::sync::Arc;
 
 #[derive(Debug, PartialEq)]
 pub struct BfvParameters {
-    polynomial_degree: usize,
+    degree: usize,
 
-    plaintext_modulus_64: u64,
+    plaintext_modulus_u64: u64,
     plaintext_modulus: Modulus,
+    plaintext_context: Arc<RqContext>,
 
     ciphertext_moduli: Vec<u64>,
     rq_context: Arc<RqContext>,
+    scalar: RqScaler,
 
     /// Error variance
     variance: isize,
+}
+
+impl BfvParameters {
+    pub fn new(
+        degree: usize,
+        plaintext_modulus_u64: u64,
+        ciphertext_moduli: Vec<u64>,
+        variance: isize,
+    ) -> Self {
+        let pt_context = Arc::new(RqContext::new(vec![ciphertext_moduli[0]], degree));
+        let rq_context = Arc::new(RqContext::new(ciphertext_moduli.clone(), degree));
+
+        // scaler for scaling down
+        // delta_m by (t/q) (i.e. from ct space to pt space)
+        let scalar = RqScaler::new(
+            &rq_context,
+            &pt_context,
+            ScalingFactor::new(
+                BigUint::from_u64(plaintext_modulus_u64).unwrap(),
+                rq_context.rns.product.clone(),
+            ),
+        );
+
+        Self {
+            degree,
+            plaintext_modulus_u64,
+            plaintext_modulus: Modulus::new(plaintext_modulus_u64),
+            plaintext_context: pt_context,
+            ciphertext_moduli,
+            rq_context,
+            scalar,
+            variance,
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -31,7 +70,7 @@ pub struct SecretKey {
 
 impl SecretKey {
     pub fn new(params: &Arc<BfvParameters>) -> Self {
-        let coeffs = sample_vec_cbd(params.polynomial_degree, params.variance).into_boxed_slice();
+        let coeffs = sample_vec_cbd(params.degree, params.variance).into_boxed_slice();
 
         Self {
             params: params.clone(),
@@ -88,6 +127,8 @@ pub struct BfvCiphertext {
 pub struct BfvCipherText {
     pub cts: Vec<Poly>,
 }
+
+pub struct BfvPlaintext {}
 
 // impl BfvCipherText {
 //     pub fn add_ciphertexts(ct0: &BfvCipherText, ct1: &BfvCipherText) -> Self {
