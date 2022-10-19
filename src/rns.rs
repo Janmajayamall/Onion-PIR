@@ -62,6 +62,14 @@ impl RnsContext {
             .collect()
     }
 
+    pub fn lift(&self, rests: ArrayView1<u64>) -> BigUint {
+        let mut res = BigUint::zero();
+        izip!(rests.iter(), self.garner.iter()).for_each(|(x, garner_i)| {
+            res += garner_i * *x;
+        });
+        res
+    }
+
     pub fn modulus(&self) -> &BigUint {
         &self.product
     }

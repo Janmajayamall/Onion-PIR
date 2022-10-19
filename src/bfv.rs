@@ -1,6 +1,6 @@
 use itertools::ProcessResults;
 use num_bigint::BigUint;
-use num_traits::FromPrimitive;
+use num_traits::{FromPrimitive, ToPrimitive};
 use rand::{thread_rng, Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 
@@ -23,6 +23,8 @@ pub struct BfvParameters {
     ciphertext_moduli: Vec<u64>,
     rq_context: Arc<RqContext>,
     scalar: RqScaler,
+    delta: Poly,
+    q_mod_t: u64,
 
     /// Error variance
     variance: isize,
@@ -49,6 +51,21 @@ impl BfvParameters {
             ),
         );
 
+        // delta = [-t^(-1)]_q
+        let delta_rests: Vec<u64> = ciphertext_moduli
+            .iter()
+            .map(|qi| {
+                let qi = Modulus::new(*qi);
+                qi.inv(qi.neg(plaintext_modulus_u64))
+            })
+            .collect();
+        let delta = rq_context.rns.lift((&delta_rests).into());
+        let delta = Poly::try_from_bigint(&rq_context, &vec![delta]);
+
+        let q_mod_t = (rq_context.rns.product.clone() % plaintext_modulus_u64)
+            .to_u64()
+            .unwrap();
+
         Self {
             degree,
             plaintext_modulus_u64,
@@ -58,6 +75,8 @@ impl BfvParameters {
             rq_context,
             scalar,
             variance,
+            delta,
+            q_mod_t,
         }
     }
 }
@@ -98,9 +117,8 @@ impl SecretKey {
     }
 
     pub fn encrypt(&self, pt: &BfvPlaintext) -> BfvCipherText {
-        // TODO: Scale plaintext poly by q / t
-        // return encrypt_poly
-        todo!()
+        let poly = pt.to_poly();
+        self.encrypt_poly(&poly)
     }
 
     pub fn decrypt(&self, bfvCt: &BfvCipherText) {
@@ -114,7 +132,8 @@ impl SecretKey {
         sk *= &bfvCt.cts[1];
         m += &sk;
 
-        // descale
+        //
+        self.params.scalar.scale(&m);
     }
 }
 
@@ -128,7 +147,40 @@ pub struct BfvCipherText {
     pub cts: Vec<Poly>,
 }
 
-pub struct BfvPlaintext {}
+pub struct BfvPlaintext {
+    params: Arc<BfvParameters>,
+    values: Box<[u64]>,
+}
+
+impl BfvPlaintext {
+    pub fn new(params: Arc<BfvParameters>, values: Vec<u64>) -> Self {
+        assert!(values.len() <= params.degree);
+        Self {
+            params,
+            values: values.into_boxed_slice(),
+        }
+    }
+
+    pub fn to_poly(&self) -> Poly {
+        // scale m values by q
+        let values = self
+            .params
+            .plaintext_modulus
+            .scalar_mul_vec(&self.values, self.params.q_mod_t);
+
+        let mut poly = Poly::try_from_vec_u64(&self.params.rq_context, &values);
+        poly.change_representation(Representation::Ntt);
+
+        // Multiply poly by delta
+        // delta = constant polynomial `(-t)^-1)` in rq.
+        // so `delta * poly` results into a poly with
+        // coefficients scaled by delta. Thus producing
+        // scaled plaintext ((q * t)*m) in rq.
+        poly *= &self.params.delta;
+
+        poly
+    }
+}
 
 // impl BfvCipherText {
 //     pub fn add_ciphertexts(ct0: &BfvCipherText, ct1: &BfvCipherText) -> Self {

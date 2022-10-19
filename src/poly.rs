@@ -98,6 +98,11 @@ impl Modulus {
         Self::reduce_ct(self.lazy_reduce_u128(a), self.p)
     }
 
+    /// **Warning: this isn't constant time**
+    pub fn reduce_biguint(&self, a: BigUint) -> u64 {
+        (a % self.p).to_u64().unwrap()
+    }
+
     /// Ref - https://github.com/Janmajayamall/fhe.rs/blob/8aafe4396d0b771e6aa25257c7daa61c109eb367/crates/fhe-math/src/zq/mod.rs#L426
     fn reduce_i64(&self, a: i64) -> u64 {
         self.reduce_u128((((self.p as i128) << 64) + (a as i128)) as u128)
@@ -109,6 +114,10 @@ impl Modulus {
 
     pub fn reduce_vec_i64(&self, a: &[i64]) -> Vec<u64> {
         a.iter().map(|ar| self.reduce_i64(*ar)).collect()
+    }
+
+    pub fn reduce_vec_biguint(&self, a: &[BigUint]) -> Vec<u64> {
+        a.iter().map(|ar| self.reduce_biguint(*ar)).collect()
     }
 
     /// Modulus exponentiation
@@ -148,6 +157,13 @@ impl Modulus {
     pub fn inv(&self, a: u64) -> u64 {
         debug_assert!(a < self.p && a != 0);
         self.pow(a, self.p - 2)
+    }
+
+    pub fn scalar_mul_vec(&self, a: &[u64], b: u64) -> Vec<u64> {
+        let b_shoup = self.shoup(b);
+        a.iter()
+            .map(|ai| self.lazy_mul_shoup(*ai, b, b_shoup))
+            .collect()
     }
 
     fn add(&self, a: u64, b: u64) -> u64 {

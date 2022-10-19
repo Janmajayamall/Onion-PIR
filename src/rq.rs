@@ -1,12 +1,13 @@
 use crate::{
     ntt::NttOperator,
-    poly::Modulus,
+    poly::{Context, Modulus},
     rns::{RnsContext, RnsScaler, ScalingFactor},
     utils::sample_vec_cbd,
 };
 use itertools::izip;
 
 use ndarray::{s, Array2, Axis};
+use num_bigint::BigUint;
 use rand::{CryptoRng, RngCore, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 use sha2::{Digest, Sha256};
@@ -117,7 +118,7 @@ pub enum Representation {
     NttShoup,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Poly {
     pub context: Arc<RqContext>,
     pub representation: Representation,
@@ -237,6 +238,15 @@ impl Poly {
         izip!(poly.coefficients.outer_iter_mut(), ctx.moduli.iter()).for_each(|(mut coeffs, q)| {
             let coeffs = coeffs.as_slice_mut().unwrap();
             coeffs[..a.len()].copy_from_slice(&q.reduce_vec_i64(a))
+        });
+        poly
+    }
+
+    pub fn try_from_bigint(ctx: &Arc<RqContext>, a: &[BigUint]) -> Poly {
+        let mut poly = Poly::zero(ctx, Representation::PowerBasis);
+        izip!(poly.coefficients.outer_iter_mut(), ctx.moduli.iter()).for_each(|(mut coeffs, q)| {
+            let coeffs = coeffs.as_slice_mut().unwrap();
+            coeffs[..a.len()].copy_from_slice(&q.reduce_vec_biguint(a))
         });
         poly
     }
