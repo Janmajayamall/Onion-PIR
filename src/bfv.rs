@@ -13,20 +13,20 @@ use std::{fmt::Debug, sync::Arc};
 
 #[derive(PartialEq)]
 pub struct BfvParameters {
-    degree: usize,
+    pub degree: usize,
 
-    plaintext_modulus_u64: u64,
-    plaintext_modulus: Modulus,
-    plaintext_context: Arc<RqContext>,
+    pub plaintext_modulus_u64: u64,
+    pub plaintext_modulus: Modulus,
+    pub plaintext_context: Arc<RqContext>,
 
-    ciphertext_moduli: Vec<u64>,
-    rq_context: Arc<RqContext>,
-    scalar: RqScaler,
-    delta: Poly,
-    q_mod_t: u64,
+    pub ciphertext_moduli: Vec<u64>,
+    pub rq_context: Arc<RqContext>,
+    pub scalar: RqScaler,
+    pub delta: Poly,
+    pub q_mod_t: u64,
 
     /// Error variance
-    variance: usize,
+    pub variance: usize,
 }
 
 impl BfvParameters {
@@ -136,7 +136,7 @@ impl Debug for BfvParameters {
 #[derive(Debug)]
 pub struct SecretKey {
     pub params: Arc<BfvParameters>,
-    coeffs: Box<[i64]>,
+    pub coeffs: Box<[i64]>,
 }
 
 impl SecretKey {

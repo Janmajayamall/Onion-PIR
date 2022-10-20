@@ -5,7 +5,6 @@ use crate::{
     utils::sample_vec_cbd,
 };
 use itertools::izip;
-
 use ndarray::{s, Array2, ArrayView2, Axis};
 use num_bigint::BigUint;
 use rand::{thread_rng, CryptoRng, RngCore, SeedableRng};
@@ -329,5 +328,14 @@ impl MulAssign<&Poly> for Poly {
         .for_each(|(mut a, b, q)| {
             q.mul_vec(a.as_slice_mut().unwrap(), b.as_slice().unwrap());
         })
+    }
+}
+
+impl MulAssign<&BigUint> for Poly {
+    fn mul_assign(&mut self, rhs: &BigUint) {
+        let mut rhs = Poly::try_from_bigint(&self.context, &[*rhs]);
+        rhs.change_representation(Representation::Ntt);
+        assert!(self.representation == Representation::Ntt);
+        *self *= &rhs;
     }
 }
