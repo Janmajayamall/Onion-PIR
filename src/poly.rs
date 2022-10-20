@@ -3,10 +3,6 @@ use itertools::Itertools;
 use num_bigint::BigUint;
 use num_traits::cast::ToPrimitive;
 use rand::{distributions::Uniform, CryptoRng, Rng, RngCore};
-use std::{
-    ops::{Add, AddAssign, Deref, Mul, MulAssign, Neg, Rem, Sub, SubAssign},
-    sync::Arc,
-};
 #[derive(Clone, PartialEq, Debug)]
 pub struct Modulus {
     pub p: u64,
@@ -242,26 +238,26 @@ impl Modulus {
     }
 }
 
-#[derive(Clone, Debug)]
-pub struct Context {
-    pub moduli: Modulus,
-    pub degree: usize,
-}
+// #[derive(Clone, Debug)]
+// pub struct Context {
+//     pub moduli: Modulus,
+//     pub degree: usize,
+// }
 
-impl Context {
-    pub fn new(moduli: Modulus, degree: usize) -> Self {
-        Self { moduli, degree }
-    }
-}
+// impl Context {
+//     pub fn new(moduli: Modulus, degree: usize) -> Self {
+//         Self { moduli, degree }
+//     }
+// }
 
-impl PartialEq for Context {
-    fn eq(&self, other: &Self) -> bool {
-        if self.moduli != other.moduli || self.degree != other.degree {
-            return false;
-        }
-        true
-    }
-}
+// impl PartialEq for Context {
+//     fn eq(&self, other: &Self) -> bool {
+//         if self.moduli != other.moduli || self.degree != other.degree {
+//             return false;
+//         }
+//         true
+//     }
+// }
 
 // #[derive(Clone, Debug)]
 // /// Polynomial Ring: Rq = Zq[x] / (x^n + 1)

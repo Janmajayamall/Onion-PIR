@@ -12,4 +12,5 @@ To understand
 
 Work on
 
-1. Plaintext (and what are levels)
+1. Implement CBD
+2. Implement decomposition

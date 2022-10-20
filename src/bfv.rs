@@ -1,19 +1,17 @@
+use crate::rns::ScalingFactor;
+use crate::rq::{Poly, Representation, RqContext, RqScaler};
+use crate::{
+    poly::Modulus,
+    utils::{generate_prime, sample_vec_cbd},
+};
 use ndarray::Axis;
 use num_bigint::BigUint;
 use num_traits::{FromPrimitive, ToPrimitive};
 use rand::{thread_rng, Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
-use rand_distr::Open01;
+use std::{fmt::Debug, sync::Arc};
 
-use crate::rns::ScalingFactor;
-use crate::rq::{Poly, Representation, RqContext, RqScaler};
-use crate::{
-    poly::{Context, Modulus},
-    utils::{generate_prime, sample_vec_cbd},
-};
-use std::sync::Arc;
-
-#[derive(Debug, PartialEq)]
+#[derive(PartialEq)]
 pub struct BfvParameters {
     degree: usize,
 
@@ -28,7 +26,7 @@ pub struct BfvParameters {
     q_mod_t: u64,
 
     /// Error variance
-    variance: isize,
+    variance: usize,
 }
 
 impl BfvParameters {
@@ -36,7 +34,7 @@ impl BfvParameters {
         degree: usize,
         plaintext_modulus_u64: u64,
         ciphertext_moduli: Vec<u64>,
-        variance: isize,
+        variance: usize,
     ) -> Self {
         let pt_context = Arc::new(RqContext::new(vec![ciphertext_moduli[0]], degree));
         let rq_context = Arc::new(RqContext::new(ciphertext_moduli.clone(), degree));
@@ -60,8 +58,10 @@ impl BfvParameters {
                 qi.inv(qi.neg(plaintext_modulus_u64))
             })
             .collect();
+
         let delta = rq_context.rns.lift((&delta_rests).into());
-        let delta = Poly::try_from_bigint(&rq_context, &vec![delta]);
+        let mut delta = Poly::try_from_bigint(&rq_context, &[delta]);
+        delta.change_representation(Representation::Ntt);
 
         let q_mod_t = (rq_context.rns.product.clone() % plaintext_modulus_u64)
             .to_u64()
@@ -113,6 +113,26 @@ impl BfvParameters {
     }
 }
 
+impl Debug for BfvParameters {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BfvParameters")
+            .field("polynomial_degree", &self.degree)
+            .field("plaintext_modulus", &self.plaintext_modulus)
+            .field("moduli", &self.ciphertext_moduli)
+            // .field("moduli_sizes", &self.moduli_sizes)
+            // .field("variance", &self.variance)
+            // .field("ctx", &self.ctx)
+            // .field("op", &self.op)
+            // .field("delta", &self.delta)
+            // .field("q_mod_t", &self.q_mod_t)
+            // .field("scaler", &self.scaler)
+            // .field("plaintext", &self.plaintext)
+            // .field("mul_params", &self.mul_params)
+            // .field("matrix_reps_index_map", &self.matrix_reps_index_map)
+            .finish()
+    }
+}
+
 #[derive(Debug)]
 pub struct SecretKey {
     pub params: Arc<BfvParameters>,
@@ -120,12 +140,20 @@ pub struct SecretKey {
 }
 
 impl SecretKey {
-    pub fn new(params: &Arc<BfvParameters>) -> Self {
-        let coeffs = sample_vec_cbd(params.degree, params.variance).into_boxed_slice();
+    pub fn generate(params: &Arc<BfvParameters>) -> Self {
+        let mut rng = thread_rng();
+        let coeffs = sample_vec_cbd(params.degree, params.variance, &mut rng).into_boxed_slice();
 
         Self {
             params: params.clone(),
             coeffs,
+        }
+    }
+
+    pub fn new(coeffs: Vec<i64>, params: &Arc<BfvParameters>) -> Self {
+        Self {
+            params: params.clone(),
+            coeffs: coeffs.into_boxed_slice(),
         }
     }
 
@@ -135,14 +163,23 @@ impl SecretKey {
 
         let mut seed = <ChaCha8Rng as SeedableRng>::Seed::default();
         thread_rng().fill(&mut seed);
-        let mut a = Poly::random_from_seed(&pt.context, Representation::Ntt, seed);
-        // a * sk
-        a *= &sk;
+        let a = Poly::random_from_seed(&pt.context, Representation::Ntt, seed);
 
-        let mut b = Poly::random_small(&pt.context, Representation::Ntt, self.params.variance);
-        // a * sk - e
-        b -= &a;
-        // b = a * sk - e + pt
+        let mut a_s = a.clone();
+        // a * sk
+        a_s *= &sk;
+
+        let mut rng = thread_rng();
+        // e
+        let mut b = Poly::random_small(
+            &pt.context,
+            Representation::Ntt,
+            self.params.variance,
+            &mut rng,
+        );
+        // -(a * sk) + e
+        b -= &a_s;
+        // b = -(a * sk) + e + pt
         b += pt;
 
         BfvCipherText { cts: vec![b, a] }
@@ -153,16 +190,18 @@ impl SecretKey {
         self.encrypt_poly(&poly)
     }
 
-    pub fn decrypt(&self, bfvCt: &BfvCipherText) -> BfvPlaintext {
-        let mut sk = Poly::try_from_vec_i64(&bfvCt.cts[0].context, &self.coeffs);
+    pub fn decrypt(&self, ct: &BfvCipherText) -> BfvPlaintext {
+        let mut sk = Poly::try_from_vec_i64(&ct.cts[0].context, &self.coeffs);
+        sk.change_representation(Representation::Ntt);
 
-        // c[0] = b = -a * sk + e + delta_m
+        // c[0] = b = -(a * sk) + e + delta_m
         // c[1] = a
         // e + delta_m = c[0] + c[1]sk
-        let mut m = bfvCt.cts[0].clone();
+        let mut m = ct.cts[0].clone();
         // sk * c[1]
-        sk *= &bfvCt.cts[1];
+        sk *= &ct.cts[1];
         m += &sk;
+        m.change_representation(Representation::PowerBasis);
 
         // We scale `m` by (t/q) scaling factor and switch
         // its rq context from `R_q` to `R_q{i}`. `R_q{i}`
@@ -177,8 +216,8 @@ impl SecretKey {
             .collect();
         m = m[..self.params.degree].to_vec();
         let q = Modulus::new(self.params.ciphertext_moduli[0]);
-        q.reduce_vec_u64(&mut m);
-        self.params.plaintext_modulus.reduce_vec_u64(&mut m);
+        m = q.reduce_vec_u64(&m);
+        m = self.params.plaintext_modulus.reduce_vec_u64(&m);
 
         BfvPlaintext {
             params: self.params.clone(),
@@ -197,6 +236,7 @@ pub struct BfvCipherText {
     pub cts: Vec<Poly>,
 }
 
+#[derive(Debug, Clone)]
 pub struct BfvPlaintext {
     params: Arc<BfvParameters>,
     values: Box<[u64]>,
@@ -238,7 +278,23 @@ mod tests {
 
     #[test]
     fn encrypt_decrypt() {
-        let params = BfvParameters::default(6, 8);
+        let mut rng = thread_rng();
+        let params = Arc::new(BfvParameters::default(6, 8));
+
+        for _ in 0..100 {
+            let sk = SecretKey::generate(&params);
+            let pt = BfvPlaintext {
+                params: params.clone(),
+                values: params
+                    .plaintext_modulus
+                    .random_vec(params.degree, &mut rng)
+                    .into_boxed_slice(),
+            };
+            let ct = sk.encrypt(&pt);
+            let pt_after = sk.decrypt(&ct);
+
+            assert_eq!(pt.values, pt_after.values);
+        }
     }
 }
 

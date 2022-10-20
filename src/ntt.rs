@@ -263,7 +263,6 @@ mod tests {
         let size = 8;
         let moduli = Modulus::new(q);
         let root = primitive_root(size, &moduli);
-        dbg!(root);
     }
 
     #[test]

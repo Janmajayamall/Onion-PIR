@@ -1,6 +1,6 @@
 use crate::{
     ntt::NttOperator,
-    poly::{Context, Modulus},
+    poly::Modulus,
     rns::{RnsContext, RnsScaler, ScalingFactor},
     utils::sample_vec_cbd,
 };
@@ -8,11 +8,13 @@ use itertools::izip;
 
 use ndarray::{s, Array2, ArrayView2, Axis};
 use num_bigint::BigUint;
-use rand::{CryptoRng, RngCore, SeedableRng};
+use rand::{thread_rng, CryptoRng, RngCore, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 use sha2::{Digest, Sha256};
 use std::{
     clone,
+    fmt::Debug,
+    io::Repeat,
     ops::{AddAssign, MulAssign, SubAssign},
     sync::Arc,
 };
@@ -31,9 +33,12 @@ impl RqScaler {
     pub fn new(from: &Arc<RqContext>, to: &Arc<RqContext>, scaling_factor: ScalingFactor) -> Self {
         assert!(from.degree == to.degree);
 
-        let number_common_moduli = izip!(&from.moduli_64, &to.moduli_64)
-            .into_iter()
-            .fold(0, |acc, (from, to)| if from == to { acc + 1 } else { acc });
+        let mut number_common_moduli = 0;
+        if scaling_factor.is_one() {
+            number_common_moduli = izip!(&from.moduli_64, &to.moduli_64)
+                .into_iter()
+                .fold(0, |acc, (from, to)| if from == to { acc + 1 } else { acc });
+        }
 
         let rns_scaler = RnsScaler::new(&from.rns, &to.rns, scaling_factor.clone());
         Self {
@@ -71,7 +76,6 @@ impl RqScaler {
                 p.coefficients.axis_iter(Axis(1))
             )
             .for_each(|(new_column, column)| {
-                dbg!(&column);
                 self.rns_scaler
                     .scale(column, new_column, self.number_common_moduli)
             });
@@ -86,13 +90,29 @@ impl RqScaler {
 }
 
 // Context
-#[derive(Debug, PartialEq, Clone)]
+#[derive(PartialEq, Clone)]
 pub struct RqContext {
     pub moduli_64: Vec<u64>,
     pub moduli: Vec<Modulus>,
     pub rns: Arc<RnsContext>,
     pub ntt_ops: Vec<NttOperator>,
     pub degree: usize,
+}
+
+impl Debug for RqContext {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Context")
+            .field("moduli", &self.moduli)
+            // .field("q", &self.q)
+            // .field("rns", &self.rns)
+            // .field("ops", &self.ops)
+            // .field("degree", &self.degree)
+            // .field("bitrev", &self.bitrev)
+            // .field("inv_last_qi_mod_qj", &self.inv_last_qi_mod_qj)
+            // .field("inv_last_qi_mod_qj_shoup", &self.inv_last_qi_mod_qj_shoup)
+            // .field("next_context", &self.next_context)
+            .finish()
+    }
 }
 
 impl RqContext {
@@ -126,8 +146,6 @@ pub struct Poly {
 }
 
 impl Poly {
-    pub fn new() {}
-
     pub fn coefficients(&self) -> ArrayView2<u64> {
         self.coefficients.view()
     }
@@ -135,26 +153,32 @@ impl Poly {
     pub fn change_representation(&mut self, to: Representation) {
         match self.representation {
             Representation::PowerBasis => match to {
-                Representation::Ntt => izip!(
-                    self.coefficients.outer_iter_mut(),
-                    self.context.ntt_ops.iter()
-                )
-                .for_each(|(mut coefficients, ntt_ops)| {
-                    ntt_ops.forward(coefficients.as_slice_mut().unwrap());
-                }),
+                Representation::Ntt => {
+                    izip!(
+                        self.coefficients.outer_iter_mut(),
+                        self.context.ntt_ops.iter()
+                    )
+                    .for_each(|(mut coefficients, ntt_ops)| {
+                        ntt_ops.forward(coefficients.as_slice_mut().unwrap());
+                    });
+                    self.representation = Representation::Ntt;
+                }
                 Representation::PowerBasis => {}
                 _ => {
                     todo!()
                 }
             },
             Representation::Ntt => match to {
-                Representation::PowerBasis => izip!(
-                    self.coefficients.outer_iter_mut(),
-                    self.context.ntt_ops.iter()
-                )
-                .for_each(|(mut coefficients, ntt_ops)| {
-                    ntt_ops.backward(coefficients.as_slice_mut().unwrap());
-                }),
+                Representation::PowerBasis => {
+                    izip!(
+                        self.coefficients.outer_iter_mut(),
+                        self.context.ntt_ops.iter()
+                    )
+                    .for_each(|(mut coefficients, ntt_ops)| {
+                        ntt_ops.backward(coefficients.as_slice_mut().unwrap());
+                    });
+                    self.representation = Representation::PowerBasis;
+                }
                 Representation::Ntt => {}
                 _ => {
                     todo!()
@@ -216,13 +240,15 @@ impl Poly {
         poly
     }
 
-    pub fn random_small(
+    pub fn random_small<R: CryptoRng + RngCore>(
         ctx: &Arc<RqContext>,
         representation: Representation,
-        variance: isize,
+        variance: usize,
+        rng: &mut R,
     ) -> Poly {
-        let poly = Poly::zero(&ctx, Representation::PowerBasis);
-        let values = sample_vec_cbd(ctx.degree, variance);
+        let poly = Poly::zero(ctx, Representation::PowerBasis);
+
+        let values = sample_vec_cbd(ctx.degree, variance, rng);
         let mut poly = Poly::try_from_vec_i64(ctx, values.as_slice());
         poly.change_representation(representation);
         poly

@@ -6,9 +6,9 @@ use ndarray::{ArrayView1, ArrayViewMut1};
 use num_bigint::BigUint;
 use num_bigint_dig::{BigUint as BigUintDig, ModInverse};
 use num_traits::{FromPrimitive, One, ToPrimitive, Zero};
-use std::{cmp::min, sync::Arc};
+use std::{cmp::min, fmt::Debug, sync::Arc};
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(PartialEq, Clone)]
 pub struct RnsContext {
     pub moduli_u64: Vec<u64>,
     pub moduli: Vec<Modulus>,
@@ -18,6 +18,20 @@ pub struct RnsContext {
     pub garner: Vec<BigUint>,
     pub product: BigUint,
     pub product_dig: BigUintDig,
+}
+
+impl Debug for RnsContext {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RnsContext")
+            .field("moduli_u64", &self.moduli_u64)
+            // .field("moduli", &self.moduli)
+            // .field("q_tilde", &self.q_tilde)
+            // .field("q_tilde_shoup", &self.q_tilde_shoup)
+            // .field("q_star", &self.q_star)
+            // .field("garner", &self.garner)
+            .field("product", &self.product)
+            .finish()
+    }
 }
 
 impl RnsContext {
