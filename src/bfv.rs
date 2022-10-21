@@ -1,5 +1,6 @@
+use crate::ksk::Ksk;
 use crate::rns::ScalingFactor;
-use crate::rq::{Poly, Representation, RqContext, RqScaler};
+use crate::rq::{Poly, Representation, RqContext, RqScaler, Substitution};
 use crate::{
     poly::Modulus,
     utils::{generate_prime, sample_vec_cbd},
@@ -9,6 +10,8 @@ use num_bigint::BigUint;
 use num_traits::{FromPrimitive, ToPrimitive};
 use rand::{thread_rng, Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
+use std::collections::HashMap;
+use std::ops::Sub;
 use std::{fmt::Debug, sync::Arc};
 
 #[derive(PartialEq)]
@@ -269,6 +272,42 @@ impl BfvPlaintext {
         poly *= &self.params.delta;
 
         poly
+    }
+}
+
+/// Special key that perform key switching operation
+/// from `s^i` to `s`, where `i` is the substitution
+/// exponent
+struct GaliosKey {
+    gk: Ksk,
+    substitution: Substitution,
+}
+
+impl GaliosKey {
+    pub fn new(sk: &SecretKey, i: Substitution) -> Self {
+        let mut sk_poly = Poly::try_from_vec_i64(&sk.params.rq_context, &sk.coeffs);
+        let sk_i_poly = sk_poly.substitute(&i);
+
+        let gk = Ksk::new(sk, &sk_i_poly);
+
+        GaliosKey {
+            gk,
+            substitution: i,
+        }
+    }
+
+    pub fn relinearize(&self, ct: BfvCipherText) -> (Poly, Poly) {
+        assert!(self.gk.params.rq_context == ct.cts[0].context);
+
+        let ct_sub: Vec<Poly> = ct
+            .cts
+            .iter()
+            .map(|poly| poly.substitute(&self.substitution))
+            .collect();
+
+        let (mut c0, c1) = self.gk.key_switch(&ct_sub[1]);
+        c0 += &ct_sub[0];
+        (c0, c1)
     }
 }
 

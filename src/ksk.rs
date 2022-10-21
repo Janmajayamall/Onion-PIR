@@ -12,7 +12,7 @@ use crate::{
 
 #[derive(Clone, Debug)]
 pub struct Ksk {
-    params: Arc<BfvParameters>,
+    pub params: Arc<BfvParameters>,
 
     c0: Vec<Poly>,
     c1: Vec<Poly>,

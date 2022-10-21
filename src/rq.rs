@@ -14,9 +14,24 @@ use std::{
     clone,
     fmt::Debug,
     io::Repeat,
-    ops::{AddAssign, Mul, MulAssign, SubAssign},
+    ops::{AddAssign, Mul, MulAssign, Sub, SubAssign},
     sync::Arc,
 };
+
+/// Substitution exponent
+/// substitute x -> x^k, where
+/// k is the exponent
+///
+/// TODO: add support for substitution in NTT form
+pub struct Substitution {
+    exponent: usize,
+}
+
+impl Substitution {
+    pub fn new(exponent: usize) -> Self {
+        Substitution { exponent }
+    }
+}
 
 /// Polt scaler
 #[derive(Debug, Clone, PartialEq)]
@@ -187,6 +202,11 @@ impl Poly {
                 todo!()
             }
         }
+    }
+
+    pub fn substitute(&self, a: &Substitution) -> Poly {
+        assert!(self.representation == Representation::PowerBasis);
+        todo!()
     }
 
     pub fn zero(ctx: &Arc<RqContext>, representation: Representation) -> Poly {
