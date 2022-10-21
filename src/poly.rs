@@ -162,13 +162,13 @@ impl Modulus {
             .collect()
     }
 
-    fn add(&self, a: u64, b: u64) -> u64 {
+    pub fn add(&self, a: u64, b: u64) -> u64 {
         debug_assert!(a < self.p);
         debug_assert!(b < self.p);
         Self::reduce_ct(a + b, self.p)
     }
 
-    fn sub(&self, a: u64, b: u64) -> u64 {
+    pub fn sub(&self, a: u64, b: u64) -> u64 {
         debug_assert!(a < self.p);
         debug_assert!(b < self.p);
         Self::reduce_ct(a + (self.p - b), self.p)

@@ -14,7 +14,7 @@ use std::{
     clone,
     fmt::Debug,
     io::Repeat,
-    ops::{AddAssign, Mul, MulAssign, Sub, SubAssign},
+    ops::{Add, AddAssign, Mul, MulAssign, Sub, SubAssign},
     sync::Arc,
 };
 
@@ -205,7 +205,35 @@ impl Poly {
     }
 
     pub fn substitute(&self, a: &Substitution) -> Poly {
-        assert!(self.representation == Representation::PowerBasis);
+        let mut poly = Poly::zero(&self.context, self.representation.clone());
+
+        match self.representation {
+            Representation::PowerBasis => {
+                let mut power = 0usize;
+                let mask = self.context.degree - 1;
+                for j in 0..self.context.degree {
+                    izip!(
+                        self.context.moduli.iter(),
+                        self.coefficients().slice(s![.., j]),
+                        poly.coefficients.slice_mut(s![.., power & mask]),
+                    )
+                    .for_each(|(q, o_p, t_p)| {
+                        if (power & self.context.degree) != 0 {
+                            *t_p = q.sub(*t_p, *o_p);
+                        } else {
+                            *t_p = q.add(*t_p, *o_p);
+                        }
+                    });
+                    power += a.exponent;
+                }
+            }
+            Representation::Ntt => {
+                todo!()
+            }
+            _ => {
+                todo!()
+            }
+        }
         todo!()
     }
 
