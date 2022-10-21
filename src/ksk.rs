@@ -1,6 +1,6 @@
-use std::{sync::Arc, vec};
+use std::sync::Arc;
 
-use crate::{bfv::BfvCipherText, rq::Representation};
+use crate::rq::Representation;
 use itertools::izip;
 use rand::{thread_rng, Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
@@ -11,7 +11,7 @@ use crate::{
 };
 
 #[derive(Clone, Debug)]
-struct Ksk {
+pub struct Ksk {
     params: Arc<BfvParameters>,
 
     c0: Vec<Poly>,
@@ -100,43 +100,44 @@ impl Ksk {
 #[cfg(test)]
 mod tests {
     use num_bigint::BigUint;
-    use sha2::digest::typenum::Prod;
 
     use super::*;
     use crate::{bfv::BfvParameters, rns::RnsContext};
 
     #[test]
     fn ksk() {
-        let params = Arc::new(BfvParameters::default(2, 8));
-        let sk = SecretKey::generate(&params);
-        let mut sk_poly = Poly::try_from_vec_i64(&params.rq_context, &sk.coeffs);
-        sk_poly.change_representation(Representation::Ntt);
+        for _ in 0..100 {
+            let params = Arc::new(BfvParameters::default(2, 8));
+            let sk = SecretKey::generate(&params);
+            let mut sk_poly = Poly::try_from_vec_i64(&params.rq_context, &sk.coeffs);
+            sk_poly.change_representation(Representation::Ntt);
 
-        let mut rng = thread_rng();
-        let mut from_poly = Poly::random(&params.rq_context, &mut rng, Representation::Ntt);
-        let ksk = Ksk::new(&sk, &from_poly);
+            let mut rng = thread_rng();
+            let mut from_poly = Poly::random(&params.rq_context, &mut rng, Representation::Ntt);
+            let ksk = Ksk::new(&sk, &from_poly);
 
-        let mut input = Poly::random(&params.rq_context, &mut rng, Representation::PowerBasis);
-        let (c0, c1) = ksk.key_switch(&input);
+            let mut input = Poly::random(&params.rq_context, &mut rng, Representation::PowerBasis);
+            let (c0, c1) = ksk.key_switch(&input);
 
-        let mut product = &c1 * &sk_poly;
-        product += &c0;
+            let mut product = &c1 * &sk_poly;
+            product += &c0;
 
-        from_poly.change_representation(Representation::Ntt);
-        input.change_representation(Representation::Ntt);
-        let mut product_ex = &from_poly * &input;
+            from_poly.change_representation(Representation::Ntt);
+            input.change_representation(Representation::Ntt);
+            let mut product_ex = &from_poly * &input;
 
-        product_ex -= &product;
+            product_ex -= &product;
 
-        product_ex.change_representation(Representation::PowerBasis);
+            product_ex.change_representation(Representation::PowerBasis);
 
-        // dbg!(product_ex.coefficients());
+            // dbg!(product_ex.coefficients());
 
-        let rns = RnsContext::new(&params.ciphertext_moduli.clone());
-        Vec::<BigUint>::from(&product_ex).iter().for_each(|b| {
-            // TODO: Why does this need to be less than 70 ?
-            // Ref - https://github.com/tlepoint/fhe.rs/blob/f7cddb358f2ce28483944f99e223c07ae41b0c1c/crates/fhe/src/bfv/keys/key_switching_key.rs#L335
-            dbg!(std::cmp::min(b.bits(), (rns.modulus() - b).bits()));
-        })
+            let rns = RnsContext::new(&params.ciphertext_moduli.clone());
+            Vec::<BigUint>::from(&product_ex).iter().for_each(|b| {
+                // TODO: Why does this need to be less than 70 ?
+                // Ref - https://github.com/tlepoint/fhe.rs/blob/f7cddb358f2ce28483944f99e223c07ae41b0c1c/crates/fhe/src/bfv/keys/key_switching_key.rs#L335
+                assert!((std::cmp::min(b.bits(), (rns.modulus() - b).bits())) <= 70);
+            });
+        }
     }
 }

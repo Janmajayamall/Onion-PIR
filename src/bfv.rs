@@ -243,11 +243,11 @@ pub struct BfvPlaintext {
 }
 
 impl BfvPlaintext {
-    pub fn new(params: Arc<BfvParameters>, values: Vec<u64>) -> Self {
+    pub fn new(params: &Arc<BfvParameters>, values: &Vec<u64>) -> Self {
         assert!(values.len() <= params.degree);
         Self {
-            params,
-            values: values.into_boxed_slice(),
+            params: params.clone(),
+            values: values.clone().into_boxed_slice(),
         }
     }
 
