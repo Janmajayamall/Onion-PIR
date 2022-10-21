@@ -4,7 +4,7 @@ use crate::{
     rns::{RnsContext, RnsScaler, ScalingFactor},
     utils::sample_vec_cbd,
 };
-use itertools::izip;
+use itertools::{izip, Itertools};
 use ndarray::{s, Array2, ArrayView2, Axis};
 use num_bigint::BigUint;
 use rand::{thread_rng, CryptoRng, RngCore, SeedableRng};
@@ -14,7 +14,7 @@ use std::{
     clone,
     fmt::Debug,
     io::Repeat,
-    ops::{AddAssign, MulAssign, SubAssign},
+    ops::{AddAssign, Mul, MulAssign, SubAssign},
     sync::Arc,
 };
 
@@ -101,7 +101,7 @@ pub struct RqContext {
 impl Debug for RqContext {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Context")
-            .field("moduli", &self.moduli)
+            .field("moduli", &self.moduli_64)
             // .field("q", &self.q)
             // .field("rns", &self.rns)
             // .field("ops", &self.ops)
@@ -116,7 +116,7 @@ impl Debug for RqContext {
 
 impl RqContext {
     pub fn new(moduli_64: Vec<u64>, degree: usize) -> Self {
-        let rns = Arc::new(RnsContext::new(moduli_64.clone()));
+        let rns = Arc::new(RnsContext::new(&moduli_64));
         let moduli = rns.moduli.clone();
         let ntt_ops = moduli.iter().map(|m| NttOperator::new(m, degree)).collect();
 
@@ -333,9 +333,28 @@ impl MulAssign<&Poly> for Poly {
 
 impl MulAssign<&BigUint> for Poly {
     fn mul_assign(&mut self, rhs: &BigUint) {
-        let mut rhs = Poly::try_from_bigint(&self.context, &[*rhs]);
+        let mut rhs = Poly::try_from_bigint(&self.context, &[rhs.clone()]);
         rhs.change_representation(Representation::Ntt);
         assert!(self.representation == Representation::Ntt);
         *self *= &rhs;
+    }
+}
+
+impl Mul<&Poly> for &Poly {
+    type Output = Poly;
+    fn mul(self, rhs: &Poly) -> Self::Output {
+        let mut tmp = self.clone();
+        tmp *= rhs;
+        tmp
+    }
+}
+
+impl From<&Poly> for Vec<BigUint> {
+    fn from(value: &Poly) -> Self {
+        value
+            .coefficients()
+            .axis_iter(Axis(1))
+            .map(|rests| value.context.rns.lift(rests))
+            .collect()
     }
 }

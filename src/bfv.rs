@@ -238,8 +238,8 @@ pub struct BfvCipherText {
 
 #[derive(Debug, Clone)]
 pub struct BfvPlaintext {
-    params: Arc<BfvParameters>,
-    values: Box<[u64]>,
+    pub params: Arc<BfvParameters>,
+    pub values: Box<[u64]>,
 }
 
 impl BfvPlaintext {

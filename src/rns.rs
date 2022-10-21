@@ -35,7 +35,7 @@ impl Debug for RnsContext {
 }
 
 impl RnsContext {
-    pub fn new(moduli_u64: Vec<u64>) -> Self {
+    pub fn new(moduli_u64: &Vec<u64>) -> Self {
         //TODO: Check that moduli are coprime
         let moduli = moduli_u64.iter().map(|m| Modulus::new(*m)).collect();
 
@@ -59,7 +59,7 @@ impl RnsContext {
             .collect();
 
         Self {
-            moduli_u64,
+            moduli_u64: moduli_u64.clone(),
             moduli,
             q_star,
             q_tilde,
@@ -81,7 +81,7 @@ impl RnsContext {
         izip!(rests.iter(), self.garner.iter()).for_each(|(x, garner_i)| {
             res += garner_i * *x;
         });
-        res
+        res % &self.product
     }
 
     pub fn modulus(&self) -> &BigUint {

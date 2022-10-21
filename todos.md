@@ -13,4 +13,5 @@ To understand
 Work on
 
 1. Implement CBD
-2. Implement decomposition
+2. Implement decomposition + Check the noise growth with different number og ciphertext moduli
+3. Try understand why Shoup representation ?
