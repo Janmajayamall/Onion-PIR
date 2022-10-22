@@ -284,29 +284,31 @@ struct GaliosKey {
 }
 
 impl GaliosKey {
-    pub fn new(sk: &SecretKey, i: Substitution) -> Self {
+    pub fn new(sk: &SecretKey, i: &Substitution) -> Self {
+        // TODO: Q. why is this the case ?
+        assert!(sk.params.ciphertext_moduli.len() != 1);
+
         let mut sk_poly = Poly::try_from_vec_i64(&sk.params.rq_context, &sk.coeffs);
-        let sk_i_poly = sk_poly.substitute(&i);
+        let mut sk_i_poly = sk_poly.substitute(i);
+        sk_i_poly.change_representation(Representation::Ntt);
 
         let gk = Ksk::new(sk, &sk_i_poly);
 
         GaliosKey {
             gk,
-            substitution: i,
+            substitution: i.clone(),
         }
     }
 
-    pub fn relinearize(&self, ct: BfvCipherText) -> (Poly, Poly) {
+    pub fn relinearize(&self, ct: &BfvCipherText) -> (Poly, Poly) {
         assert!(self.gk.params.rq_context == ct.cts[0].context);
 
-        let ct_sub: Vec<Poly> = ct
-            .cts
-            .iter()
-            .map(|poly| poly.substitute(&self.substitution))
-            .collect();
+        debug_assert!(ct.cts[0].representation == Representation::Ntt);
 
-        let (mut c0, c1) = self.gk.key_switch(&ct_sub[1]);
-        c0 += &ct_sub[0];
+        let mut c1_r = ct.cts[1].substitute(&self.substitution);
+        c1_r.change_representation(Representation::PowerBasis);
+        let (mut c0, c1) = self.gk.key_switch(&c1_r);
+        c0 += &ct.cts[0].substitute(&self.substitution);
         (c0, c1)
     }
 }
@@ -333,6 +335,36 @@ mod tests {
             let pt_after = sk.decrypt(&ct);
 
             assert_eq!(pt.values, pt_after.values);
+        }
+    }
+
+    #[test]
+    fn galois_key() {
+        for _ in 0..100 {
+            let mut rng = thread_rng();
+            let params = Arc::new(BfvParameters::default(2, 8));
+            let sk = SecretKey::generate(&params);
+
+            let subs = Substitution::new(3);
+            let gk = GaliosKey::new(&sk, &subs);
+
+            let v = params.plaintext_modulus.random_vec(params.degree, &mut rng);
+            let pt = BfvPlaintext::new(&params, &v);
+            let ct = sk.encrypt(&pt);
+
+            let (c0, c1) = gk.relinearize(&ct);
+            let vr = sk.decrypt(&BfvCipherText { cts: vec![c0, c1] });
+
+            let pt_ctx = Arc::new(RqContext::new(
+                vec![params.plaintext_modulus_u64],
+                params.degree,
+            ));
+            let expected_vr = Poly::try_from_vec_u64(&pt_ctx, &v);
+
+            assert_eq!(
+                vr.values.to_vec(),
+                Vec::<u64>::from(&expected_vr.substitute(&subs))
+            );
         }
     }
 }

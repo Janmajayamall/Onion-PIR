@@ -151,9 +151,7 @@ impl NttOperator {
         }
 
         a.iter_mut().for_each(|a_inv| {
-            *a_inv = self
-                .p
-                .lazy_mul_shoup(*a_inv, self.size_inv, self.size_inv_shoup);
+            *a_inv = self.p.mul_shoup(*a_inv, self.size_inv, self.size_inv_shoup);
         });
     }
 

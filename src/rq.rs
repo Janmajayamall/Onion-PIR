@@ -1,17 +1,19 @@
 use crate::{
     ntt::NttOperator,
-    poly::Modulus,
+    poly::{self, Modulus},
     rns::{RnsContext, RnsScaler, ScalingFactor},
     utils::sample_vec_cbd,
 };
 use itertools::{izip, Itertools};
 use ndarray::{s, Array2, ArrayView2, Axis};
 use num_bigint::BigUint;
+use num_traits::ToPrimitive;
 use rand::{thread_rng, CryptoRng, RngCore, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 use sha2::{Digest, Sha256};
 use std::{
     clone,
+    error::Error,
     fmt::Debug,
     io::Repeat,
     ops::{Add, AddAssign, Mul, MulAssign, Sub, SubAssign},
@@ -23,12 +25,15 @@ use std::{
 /// k is the exponent
 ///
 /// TODO: add support for substitution in NTT form
+#[derive(Clone, Debug)]
 pub struct Substitution {
     exponent: usize,
 }
 
 impl Substitution {
     pub fn new(exponent: usize) -> Self {
+        // TODO: Why is this necessary ? https://github.com/tlepoint/fhe.rs/blob/8aafe4396d0b771e6aa25257c7daa61c109eb367/crates/fhe-math/src/rq/mod.rs#L54
+
         Substitution { exponent }
     }
 }
@@ -218,6 +223,10 @@ impl Poly {
                         poly.coefficients.slice_mut(s![.., power & mask]),
                     )
                     .for_each(|(q, o_p, t_p)| {
+                        // Subtract degree coefficient when ceil(power / self.context.degree) is odd,
+                        // otherwise add.
+                        // Note that: X^N = -1. Therefore, substitution by `k` is
+                        // (X^N)^k == -1^k
                         if (power & self.context.degree) != 0 {
                             *t_p = q.sub(*t_p, *o_p);
                         } else {
@@ -227,14 +236,17 @@ impl Poly {
                     power += a.exponent;
                 }
             }
-            Representation::Ntt => {
-                todo!()
-            }
             _ => {
-                todo!()
+                //FIXME: quick hack
+                let mut p = self.clone();
+                p.change_representation(Representation::PowerBasis);
+                p = p.substitute(a);
+                p.change_representation(self.representation.clone());
+
+                poly = p;
             }
         }
-        todo!()
+        poly
     }
 
     pub fn zero(ctx: &Arc<RqContext>, representation: Representation) -> Poly {
@@ -404,5 +416,63 @@ impl From<&Poly> for Vec<BigUint> {
             .axis_iter(Axis(1))
             .map(|rests| value.context.rns.lift(rests))
             .collect()
+    }
+}
+
+// TODO: change this to try from
+impl From<&Poly> for Vec<u64> {
+    fn from(value: &Poly) -> Self {
+        assert!(value.context.moduli_64.len() == 1);
+        value
+            .coefficients()
+            .axis_iter(Axis(1))
+            .map(|rests| value.context.rns.lift(rests).to_u64().unwrap())
+            .collect()
+    }
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::bfv::BfvParameters;
+
+    // Moduli to be used in tests.
+    const MODULI: &[u64; 1] = &[
+        1153,
+        // 4611686018326724609,
+        // 4611686018309947393,
+        // 4611686018232352769,
+        // 4611686018171535361,
+    ];
+
+    #[test]
+    fn change_representation() {
+        for _ in 0..100 {
+            let params = Arc::new(BfvParameters::default(1, 8));
+            let rq = params.rq_context.clone();
+            let mut rng = thread_rng();
+
+            let mut p = Poly::random(&rq, &mut rng, Representation::PowerBasis);
+            let mut q = p.clone();
+            p.change_representation(Representation::Ntt);
+            p.change_representation(Representation::PowerBasis);
+
+            assert_eq!(p, q)
+        }
+    }
+
+    #[test]
+    fn substitute() {
+        let mut rng = thread_rng();
+        let ctx = Arc::new(RqContext::new(MODULI.to_vec(), 8));
+
+        let mut p = Poly::random(&ctx, &mut rng, Representation::PowerBasis);
+        let q = p.clone();
+        p.change_representation(Representation::Ntt);
+
+        let mut p3 = p.substitute(&Substitution { exponent: 3 });
+        p3 = p3.substitute(&Substitution { exponent: 11 });
+        p3.change_representation(Representation::PowerBasis);
+        dbg!(p3);
+        dbg!(q);
     }
 }

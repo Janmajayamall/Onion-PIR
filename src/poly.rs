@@ -169,6 +169,7 @@ impl Modulus {
     }
 
     pub fn sub(&self, a: u64, b: u64) -> u64 {
+        // dbg!(a, b, self.p);
         debug_assert!(a < self.p);
         debug_assert!(b < self.p);
         Self::reduce_ct(a + (self.p - b), self.p)
@@ -209,6 +210,10 @@ impl Modulus {
 
     pub fn shoup_vec(&self, vals: &[u64]) -> Vec<u64> {
         vals.into_iter().map(|v| self.shoup(*v)).collect()
+    }
+
+    pub fn mul_shoup(&self, a: u64, b: u64, b_shoup: u64) -> u64 {
+        Self::reduce_ct(self.lazy_mul_shoup(a, b, b_shoup), self.p)
     }
 
     /// Lazy shoup multiplication of a, b in ct

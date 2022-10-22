@@ -10,8 +10,17 @@ To understand
 
 5. Understand how moduli are generated for moduli bit sizes.
 
+6. Understand sample_vec_cbd
+
+7. Understand substitution in NTT domain.
+
+8. Why does key switching (and substitution) require ciphertext modulues residue moduli length be greater than 1 ?
+   Is it because error growth is too much for ciphertext space with 64 bit to handle ?
+   Ref - https://github.com/tlepoint/fhe.rs/blob/f7cddb358f2ce28483944f99e223c07ae41b0c1c/crates/fhe/src/bfv/keys/key_switching_key.rs#L58
+
+9.
+
 Work on
 
-1. Implement CBD
-2. Implement decomposition + Check the noise growth with different number og ciphertext moduli
-3. Try understand why Shoup representation ?
+1. Implement substitutions and unpack algorithm of onion PIR
+2. Understand (4), (7), (1,6)
