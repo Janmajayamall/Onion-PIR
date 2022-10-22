@@ -1,5 +1,6 @@
 mod bfv;
 // mod client;
+mod evaluations;
 mod ksk;
 mod ntt;
 mod poly;

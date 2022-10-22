@@ -242,6 +242,7 @@ mod tests {
             let (ec0, ec1) = RgswCt::external_product(&rgsw_ct, &bfv_ct);
             let product = sk.decrypt(&BfvCipherText {
                 cts: vec![ec0, ec1],
+                params: params.clone(),
             });
 
             let rp = Arc::new(RqContext::new(

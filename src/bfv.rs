@@ -11,8 +11,13 @@ use num_traits::{FromPrimitive, ToPrimitive};
 use rand::{thread_rng, Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 use std::collections::HashMap;
-use std::ops::Sub;
-use std::{fmt::Debug, sync::Arc};
+
+use std::task::Context;
+use std::{
+    fmt::Debug,
+    ops::{Add, Mul, Sub},
+    sync::Arc,
+};
 
 #[derive(PartialEq)]
 pub struct BfvParameters {
@@ -185,7 +190,10 @@ impl SecretKey {
         // b = -(a * sk) + e + pt
         b += pt;
 
-        BfvCipherText { cts: vec![b, a] }
+        BfvCipherText {
+            cts: vec![b, a],
+            params: self.params.clone(),
+        }
     }
 
     pub fn encrypt(&self, pt: &BfvPlaintext) -> BfvCipherText {
@@ -236,7 +244,57 @@ pub struct BfvCiphertext {
 
 #[derive(Debug, Clone)]
 pub struct BfvCipherText {
+    pub params: Arc<BfvParameters>,
     pub cts: Vec<Poly>,
+}
+
+impl Add<&BfvCipherText> for &BfvCipherText {
+    type Output = BfvCipherText;
+    fn add(self, rhs: &BfvCipherText) -> Self::Output {
+        assert!(self.params == rhs.params);
+
+        let c0 = &self.cts[0] + &rhs.cts[0];
+        let c1 = &self.cts[1] + &rhs.cts[1];
+
+        BfvCipherText {
+            params: self.params.clone(),
+            cts: vec![c0, c1],
+        }
+    }
+}
+
+impl Sub<&BfvCipherText> for &BfvCipherText {
+    type Output = BfvCipherText;
+    fn sub(self, rhs: &BfvCipherText) -> Self::Output {
+        assert!(self.params == rhs.params);
+
+        let c0 = &self.cts[0] - &rhs.cts[0];
+        let c1 = &self.cts[1] - &rhs.cts[1];
+
+        BfvCipherText {
+            params: self.params.clone(),
+            cts: vec![c0, c1],
+        }
+    }
+}
+
+impl Mul<&BfvPlaintext> for &BfvCipherText {
+    type Output = BfvCipherText;
+    fn mul(self, rhs: &BfvPlaintext) -> Self::Output {
+        assert!(rhs.params == self.params);
+
+        // TODO: store this in BfvPlaintext
+        let mut pt_poly = Poly::try_from_vec_u64(&self.params.rq_context, &rhs.values);
+        pt_poly.change_representation(Representation::Ntt);
+
+        let c0 = &self.cts[0] * &pt_poly;
+        let c1 = &self.cts[1] * &pt_poly;
+
+        BfvCipherText {
+            params: self.params.clone(),
+            cts: vec![c0, c1],
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -278,7 +336,7 @@ impl BfvPlaintext {
 /// Special key that perform key switching operation
 /// from `s^i` to `s`, where `i` is the substitution
 /// exponent
-struct GaliosKey {
+pub struct GaliosKey {
     gk: Ksk,
     substitution: Substitution,
 }
@@ -300,7 +358,7 @@ impl GaliosKey {
         }
     }
 
-    pub fn relinearize(&self, ct: &BfvCipherText) -> (Poly, Poly) {
+    pub fn relinearize(&self, ct: &BfvCipherText) -> BfvCipherText {
         assert!(self.gk.params.rq_context == ct.cts[0].context);
 
         debug_assert!(ct.cts[0].representation == Representation::Ntt);
@@ -309,13 +367,22 @@ impl GaliosKey {
         c1_r.change_representation(Representation::PowerBasis);
         let (mut c0, c1) = self.gk.key_switch(&c1_r);
         c0 += &ct.cts[0].substitute(&self.substitution);
-        (c0, c1)
+
+        BfvCipherText {
+            params: ct.params.clone(),
+            cts: vec![c0, c1],
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn ops() {
+        let mut rng = thread_rng();
+        let params = Arc::new(BfvParameters::default(6, 8));
+    }
 
     #[test]
     fn encrypt_decrypt() {
@@ -352,8 +419,8 @@ mod tests {
             let pt = BfvPlaintext::new(&params, &v);
             let ct = sk.encrypt(&pt);
 
-            let (c0, c1) = gk.relinearize(&ct);
-            let vr = sk.decrypt(&BfvCipherText { cts: vec![c0, c1] });
+            let ct2 = gk.relinearize(&ct);
+            let vr = sk.decrypt(&ct2);
 
             let pt_ctx = Arc::new(RqContext::new(
                 vec![params.plaintext_modulus_u64],

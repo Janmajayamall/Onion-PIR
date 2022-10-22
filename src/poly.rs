@@ -198,6 +198,10 @@ impl Modulus {
         izip!(a, b).for_each(|(ab, b)| *ab = self.mul(*ab, *b))
     }
 
+    pub fn neg_vec(&self, a: &[u64]) -> Vec<u64> {
+        a.iter().map(|ai| self.neg(*ai)).collect()
+    }
+
     /// Shoup representation of value
     ///
     /// (a * 2^64)/ p

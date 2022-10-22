@@ -16,7 +16,7 @@ use std::{
     error::Error,
     fmt::Debug,
     io::Repeat,
-    ops::{Add, AddAssign, Mul, MulAssign, Sub, SubAssign},
+    ops::{Add, AddAssign, Mul, MulAssign, Neg, Sub, SubAssign},
     sync::Arc,
 };
 
@@ -359,6 +359,15 @@ impl AddAssign<&Poly> for Poly {
     }
 }
 
+impl Add<&Poly> for &Poly {
+    type Output = Poly;
+    fn add(self, rhs: &Poly) -> Self::Output {
+        let mut tmp = self.clone();
+        tmp += rhs;
+        tmp
+    }
+}
+
 impl SubAssign<&Poly> for Poly {
     fn sub_assign(&mut self, rhs: &Poly) {
         assert!(self.representation == Representation::Ntt);
@@ -372,6 +381,15 @@ impl SubAssign<&Poly> for Poly {
         .for_each(|(mut a, b, q)| {
             q.sub_vec(a.as_slice_mut().unwrap(), b.as_slice().unwrap());
         })
+    }
+}
+
+impl Sub<&Poly> for &Poly {
+    type Output = Poly;
+    fn sub(self, rhs: &Poly) -> Self::Output {
+        let mut tmp = self.clone();
+        tmp -= rhs;
+        tmp
     }
 }
 
@@ -405,6 +423,24 @@ impl Mul<&Poly> for &Poly {
     fn mul(self, rhs: &Poly) -> Self::Output {
         let mut tmp = self.clone();
         tmp *= rhs;
+        tmp
+    }
+}
+
+impl Neg for &Poly {
+    type Output = Poly;
+    fn neg(self) -> Self::Output {
+        let mut tmp = Poly::zero(&self.context, self.representation.clone());
+        izip!(
+            self.coefficients.outer_iter(),
+            tmp.coefficients.outer_iter_mut(),
+            self.context.moduli.iter()
+        )
+        .for_each(|(a, mut b, q)| {
+            b.as_slice_mut()
+                .unwrap()
+                .copy_from_slice(&q.neg_vec(&a.as_slice().unwrap()));
+        });
         tmp
     }
 }
