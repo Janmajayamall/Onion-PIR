@@ -22,5 +22,5 @@ To understand
 
 Work on
 
-1. Implement substitutions and unpack algorithm of onion PIR
+1. test unpack and encode algorithm of onion PIR
 2. Understand (4), (7), (1,6)

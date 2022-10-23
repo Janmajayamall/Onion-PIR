@@ -10,9 +10,6 @@ use num_bigint::BigUint;
 use num_traits::{FromPrimitive, ToPrimitive};
 use rand::{thread_rng, Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
-use std::collections::HashMap;
-
-use std::task::Context;
 use std::{
     fmt::Debug,
     ops::{Add, Mul, Sub},
@@ -97,7 +94,7 @@ impl BfvParameters {
     /// Generate ciphertext moduli with the specified sizes
     ///
     /// Ref - https://github.com/tlepoint/fhe.rs/blob/b573138d682e69c3553c2e4ae4a1b7f7a65dbe5d/crates/fhe/src/bfv/parameters.rs#L281
-    fn generate_moduli(moduli_sizes: &[usize], degree: usize) -> Option<Vec<u64>> {
+    pub fn generate_moduli(moduli_sizes: &[usize], degree: usize) -> Option<Vec<u64>> {
         let mut moduli = vec![];
         for size in moduli_sizes {
             assert!(*size <= 62 && *size >= 10);
