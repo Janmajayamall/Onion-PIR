@@ -148,6 +148,7 @@ impl SecretKey {
     pub fn generate(params: &Arc<BfvParameters>) -> Self {
         let mut rng = thread_rng();
         let coeffs = sample_vec_cbd(params.degree, params.variance, &mut rng).into_boxed_slice();
+        // let coeffs = (0..(params.degree)).into_iter().map(|_| 2i64).collect();
 
         Self {
             params: params.clone(),

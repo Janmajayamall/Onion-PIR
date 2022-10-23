@@ -131,7 +131,56 @@ mod tests {
     use num_bigint::BigUint;
 
     use super::*;
-    use crate::{bfv::BfvParameters, rns::RnsContext};
+    use crate::{
+        bfv::{BfvParameters, BfvPlaintext},
+        rns::RnsContext,
+    };
+
+    #[test]
+    fn trial() {
+        let mut rng = thread_rng();
+        let degree = 64;
+        // let ct_moduli = BfvParameters::generate_moduli(&[50, 55, 55], degree).unwrap();
+        // dbg!(&ct_moduli);
+        let pt_moduli: u64 = (1 << 20) + (1 << 19) + (1 << 17) + (1 << 16) + (1 << 14) + 1;
+        // let params = Arc::new(BfvParameters::new(degree, pt_moduli, ct_moduli, 10));
+        let params = Arc::new(BfvParameters::new(
+            degree,
+            pt_moduli,
+            vec![1125899906840833, 36028797018963841, 36028797018963457],
+            10,
+        ));
+        let sk = &SecretKey::generate(&params);
+
+        let mut one_poly = Poly::try_from_vec_u64(&params.rq_context, &[0u64]);
+        let mut sk_poly = Poly::try_from_vec_i64(&params.rq_context, &sk.coeffs);
+        one_poly.change_representation(Representation::Ntt);
+        sk_poly.change_representation(Representation::Ntt);
+        sk_poly *= &one_poly;
+        let ksk = Ksk::new(&sk, &sk_poly);
+        izip!(ksk.c0.iter(), ksk.c1.iter()).for_each(|(c0, c1)| {
+            let p = sk.decrypt(&BfvCipherText {
+                params: params.clone(),
+                cts: vec![c0.clone(), c1.clone()],
+            });
+            println!("{:?}", p.values);
+        });
+
+        let mut two = BfvPlaintext::new(&params, &[2u64].to_vec());
+        let mut two_poly = sk.encrypt(&two);
+        let mut c0 = two_poly.cts[0].clone();
+        let mut c1 = two_poly.cts[1].clone();
+        c1.change_representation(Representation::PowerBasis);
+        let (c0_2, c1_2) = ksk.key_switch(&c1);
+        println!(
+            "two * sk: {:?}",
+            sk.decrypt(&BfvCipherText {
+                params: params.clone(),
+                cts: vec![&c0 + &c0_2, c1_2],
+            })
+            .values
+        );
+    }
 
     #[test]
     fn ksk() {

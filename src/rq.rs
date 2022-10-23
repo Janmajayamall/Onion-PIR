@@ -4,9 +4,11 @@ use crate::{
     rns::{RnsContext, RnsScaler, ScalingFactor},
     utils::sample_vec_cbd,
 };
+
 use itertools::{izip, Itertools};
 use ndarray::{s, Array2, ArrayView2, Axis};
 use num_bigint::BigUint;
+use num_bigint_dig::BigUint as BigUintDig;
 use num_traits::ToPrimitive;
 use rand::{thread_rng, CryptoRng, RngCore, SeedableRng};
 use rand_chacha::ChaCha8Rng;
@@ -255,6 +257,22 @@ impl Poly {
             representation,
             coefficients: Array2::zeros((ctx.moduli.len(), ctx.degree)),
         }
+    }
+
+    pub fn inverse(&self) -> Poly {
+        let mut poly = Poly::zero(&self.context, self.representation.clone());
+        izip!(
+            poly.coefficients.outer_iter_mut(),
+            self.coefficients().outer_iter(),
+            self.context.moduli.iter()
+        )
+        .for_each(|(mut inv_p, p, q)| {
+            inv_p
+                .as_slice_mut()
+                .unwrap()
+                .copy_from_slice(&q.inv_vec(p.as_slice().unwrap()))
+        });
+        poly
     }
 
     pub fn random<R: RngCore + CryptoRng>(

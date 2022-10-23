@@ -234,10 +234,45 @@ mod tests {
     use super::*;
     use crate::{
         bfv::{BfvParameters, BfvPlaintext},
+        poly::Modulus,
         rq::RqContext,
     };
     use rand::thread_rng;
     use std::sync::Arc;
+
+    #[test]
+    fn encrypt_poly() {
+        let pt_moduli: u64 = (1 << 20) + (1 << 19) + (1 << 17) + (1 << 16) + (1 << 14) + 1;
+        let params = Arc::new(BfvParameters::new(
+            64,
+            pt_moduli,
+            vec![1125899906840833, 36028797018963841, 36028797018963457],
+            10,
+        ));
+        // let params = Arc::new(BfvParameters::default(6, 8));
+        let sk = SecretKey::generate(&params);
+
+        // let m = BfvPlaintext::new(&params, &vec![1u64]);
+        // let rgsw = RgswCt::encrypt(&sk, &m);
+
+        let mut m = Poly::try_from_vec_i64(&sk.params.rq_context, &sk.coeffs);
+        m.change_representation(Representation::Ntt);
+        let rgsw = RgswCt::encrypt_poly(&sk, &m);
+
+        // checking RGSW
+        let one_pt = BfvPlaintext::new(&sk.params, &vec![1u64]);
+        let one_ct = sk.encrypt(&one_pt);
+        let one_product = RgswCt::external_product(&rgsw, &one_ct);
+        let one_product = BfvCipherText {
+            params: sk.params.clone(),
+            cts: vec![one_product.0, one_product.1],
+        };
+        let one_res = sk.decrypt(&one_product);
+        println!(
+            "{:?}",
+            Modulus::new(pt_moduli).reduce_vec_u64(&one_res.values)
+        );
+    }
 
     #[test]
     fn external_product() {

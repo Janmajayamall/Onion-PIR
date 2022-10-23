@@ -155,6 +155,10 @@ impl Modulus {
         self.pow(a, self.p - 2)
     }
 
+    pub fn inv_vec(&self, a: &[u64]) -> Vec<u64> {
+        a.iter().map(|ai| self.inv(*ai)).collect()
+    }
+
     pub fn scalar_mul_vec(&self, a: &[u64], b: u64) -> Vec<u64> {
         let b_shoup = self.shoup(b);
         a.iter()
