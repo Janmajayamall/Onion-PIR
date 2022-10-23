@@ -14,8 +14,8 @@ use crate::{
 pub struct Ksk {
     pub params: Arc<BfvParameters>,
 
-    c0: Vec<Poly>,
-    c1: Vec<Poly>,
+    pub c0: Vec<Poly>,
+    pub c1: Vec<Poly>,
 
     /// Context of poly that will be key switched
     ct_context: Arc<RqContext>,

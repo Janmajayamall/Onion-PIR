@@ -137,7 +137,13 @@ impl Server {
                                 },
                             );
 
-                            
+                            izip!(g.ksk1.c0.iter(), g.ksk1.c1.iter()).for_each(|(c0, c1)| {
+                                let p = sk.decrypt(&BfvCipherText {
+                                    params: sk.params.clone(),
+                                    cts: vec![c0.clone(), c1.clone()],
+                                });
+                                println!("b_i: {:?}", p.values);
+                            });
 
                             return g;
                         } else {

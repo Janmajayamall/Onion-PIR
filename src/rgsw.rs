@@ -175,8 +175,8 @@ use crate::{
 /// E (2l X 2)
 #[derive(Debug)]
 pub struct RgswCt {
-    ksk0: Ksk,
-    ksk1: Ksk,
+    pub ksk0: Ksk,
+    pub ksk1: Ksk,
 }
 
 impl RgswCt {
