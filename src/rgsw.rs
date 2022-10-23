@@ -180,19 +180,28 @@ pub struct RgswCt {
 }
 
 impl RgswCt {
-    pub fn encrypt(sk: &SecretKey, m: &BfvPlaintext) -> Self {
-        assert!(sk.params == m.params);
+    pub fn encrypt_poly(sk: &SecretKey, m: &Poly) -> Self {
+        assert!(sk.params.rq_context == m.context);
+        assert!(m.representation == Representation::Ntt);
+
         let mut sk_poly = Poly::try_from_vec_i64(&sk.params.rq_context, &sk.coeffs);
         sk_poly.change_representation(Representation::Ntt);
 
-        let mut m = Poly::try_from_vec_u64(&sk.params.rq_context, &m.values);
-        m.change_representation(Representation::Ntt);
-        let s_m = &sk_poly * &m;
+        let s_m = &sk_poly * m;
 
-        let ksk0 = Ksk::new(&sk, &s_m);
-        let ksk1 = Ksk::new(&sk, &m);
+        let ksk0 = Ksk::new(sk, &s_m);
+        let ksk1 = Ksk::new(sk, m);
 
         RgswCt { ksk0, ksk1 }
+    }
+
+    pub fn encrypt(sk: &SecretKey, m: &BfvPlaintext) -> Self {
+        assert!(sk.params == m.params);
+
+        let mut m = Poly::try_from_vec_u64(&sk.params.rq_context, &m.values);
+        m.change_representation(Representation::Ntt);
+
+        RgswCt::encrypt_poly(sk, &m)
     }
 
     pub fn external_product(rgsw: &RgswCt, bfv: &BfvCipherText) -> (Poly, Poly) {
@@ -210,6 +219,13 @@ impl RgswCt {
         c0_1 += &c1_1;
 
         (c0_0, c0_1)
+    }
+
+    pub fn try_from_ksks(ksk0: &Ksk, ksk1: &Ksk) -> Self {
+        Self {
+            ksk0: ksk0.clone(),
+            ksk1: ksk1.clone(),
+        }
     }
 }
 

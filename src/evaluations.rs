@@ -1,40 +1,36 @@
-use itertools::{izip, Itertools};
-use num_traits::ToPrimitive;
-use std::{
-    collections::HashMap, default::Default, f32::consts::E, future::pending, ops::Sub,
-    os::unix::process::parent_id, sync::Arc, vec,
-};
-
 use crate::{
     bfv::{BfvCipherText, BfvParameters, BfvPlaintext, GaliosKey, SecretKey},
-    poly::Modulus,
+    ksk::Ksk,
+    rgsw::RgswCt,
     rq::{Poly, Representation, RqContext, Substitution},
     utils::ilog2,
 };
+use itertools::{enumerate, izip};
+use std::{collections::HashMap, default::Default, sync::Arc, vec};
 
 struct Client {
-    first_dim: u64,
-    dim: u64,
+    first_dim: usize,
+    dim: usize,
 }
 
 impl Default for Client {
     fn default() -> Self {
         Client {
             first_dim: 4,
-            dim: 2,
+            dim: 4,
         }
     }
 }
 
 impl Client {
-    pub fn new(first_dim: u64, dim: u64) -> Client {
+    pub fn new(first_dim: usize, dim: usize) -> Client {
         Client { first_dim, dim }
     }
 
     pub fn encode(
         &self,
-        query_dims: Vec<u64>,
-        db_rows: u64,
+        query_dims: Vec<usize>,
+        db_rows: usize,
         bfv_params: &Arc<BfvParameters>,
     ) -> Vec<u64> {
         assert!(query_dims[0] < self.first_dim);
@@ -42,7 +38,7 @@ impl Client {
             .map(|i| (i == query_dims[0]).into())
             .collect();
 
-        assert!(((db_rows / self.first_dim) / 4u64.pow((query_dims.len() - 1) as u32)) == 1);
+        assert!(((db_rows / self.first_dim) / self.dim.pow((query_dims.len() - 1) as u32)) == 1);
 
         // final length of `rgsws` = garner.len() * self.dim * (query_dims - 1)
         let mut rgsws: Vec<u64> = vec![];
@@ -66,12 +62,164 @@ impl Client {
     }
 }
 
+struct Server {
+    first_dim: usize,
+    dim: usize,
+    db: Vec<BfvPlaintext>,
+}
+
+impl Server {
+    pub fn new(first_dim: usize, dim: usize, db: &Vec<BfvPlaintext>) -> Self {
+        Self {
+            first_dim,
+            dim,
+            db: db.clone(),
+        }
+    }
+
+    fn no_of_cts(&self, decomposition_base: usize) -> usize {
+        let mut len = self.db.len();
+        let mut count = 0usize;
+
+        count += self.first_dim as usize;
+        len /= self.first_dim as usize;
+
+        while len > 1 {
+            len /= self.dim as usize;
+            count += (self.dim as usize * decomposition_base)
+        }
+        count
+    }
+
+    pub fn decode(
+        &self,
+        decomposition_base: usize,
+        query_ct: &BfvCipherText,
+        eval_key: &Evaluation,
+        //FIXEME: REMOVE
+        sk: &SecretKey,
+    ) -> Vec<BfvCipherText> {
+        let mut cts = eval_key.unpack(query_ct);
+
+        // truncate cts
+        let no_cts = self.no_of_cts(decomposition_base);
+        cts = cts[0..no_cts].to_vec();
+
+        // cts.iter().for_each(|c| {
+        //     println!("{:?} cs", sk.decrypt(c).values);
+        // });
+
+        let first_dim_bfvs = &cts[..(self.first_dim as usize)];
+
+        let dimensions_queries: Vec<Vec<RgswCt>> = cts[(self.first_dim as usize)..]
+            .chunks(self.dim as usize * decomposition_base)
+            .into_iter()
+            .enumerate()
+            .map(|(dim_index, dim_cts)| {
+                dim_cts
+                    .chunks(decomposition_base)
+                    .into_iter()
+                    .enumerate()
+                    .map(|(row_index, row_ksk_cts)| {
+                        dbg!(row_ksk_cts.len());
+                        let s_row_ksk_cts = row_ksk_cts
+                            .iter()
+                            .map(|a| {
+                                let (c0, c1) = RgswCt::external_product(&eval_key.sk_rgsw, a);
+
+                                let f = BfvCipherText {
+                                    params: a.params.clone(),
+                                    cts: vec![c0, c1],
+                                };
+
+                                println!(
+                                    "dim: {}, row: {}, {:?}",
+                                    dim_index,
+                                    row_index,
+                                    sk.decrypt(&f).values
+                                );
+
+                                f
+                            })
+                            .collect();
+
+                        let row_ksk = Ksk::try_from_decomposed_rlwes(
+                            &row_ksk_cts[0].params,
+                            &row_ksk_cts.to_vec(),
+                        );
+                        let s_row_ksk =
+                            Ksk::try_from_decomposed_rlwes(&row_ksk_cts[0].params, &s_row_ksk_cts);
+
+                        RgswCt::try_from_ksks(&s_row_ksk, &row_ksk)
+                    })
+                    .collect()
+            })
+            .collect();
+
+        // First dimension
+        let mut db: Vec<BfvCipherText> = self
+            .db
+            .chunks(self.first_dim as usize)
+            .into_iter()
+            .map(|pts| {
+                let rows = izip!(first_dim_bfvs.iter(), pts.iter()).map(|(q, p)| q * p);
+
+                let mut sum = BfvCipherText {
+                    params: pts[0].params.clone(),
+                    cts: vec![],
+                };
+                rows.enumerate().for_each(|(index, product)| {
+                    if index == 0 {
+                        sum = product;
+                    } else {
+                        sum = &sum + &product
+                    }
+                });
+                sum
+            })
+            .collect();
+
+        // Rest of dimensions
+        dimensions_queries.iter().for_each(|query_rgsws| {
+            let tmp = db
+                .chunks(self.dim)
+                .into_iter()
+                .map(|cts| {
+                    let rows = izip!(query_rgsws.iter(), cts.iter()).map(|(rgsw, bfv)| {
+                        let (c0, c1) = RgswCt::external_product(rgsw, bfv);
+                        BfvCipherText {
+                            params: bfv.params.clone(),
+                            cts: vec![c0, c1],
+                        }
+                    });
+                    let mut sum = BfvCipherText {
+                        params: cts[0].params.clone(),
+                        cts: vec![],
+                    };
+                    rows.enumerate().for_each(|(index, product)| {
+                        if index == 0 {
+                            sum = product;
+                        } else {
+                            sum = &sum + &product
+                        }
+                    });
+                    sum
+                })
+                .collect();
+            db = tmp;
+        });
+
+        db
+    }
+}
+
 struct Evaluation {
     gk: HashMap<usize, GaliosKey>,
+    sk_rgsw: RgswCt,
 }
 
 impl Evaluation {
-    pub fn new(sk: &SecretKey, params: &Arc<BfvParameters>) -> Self {
+    pub fn build(sk: &SecretKey, params: &Arc<BfvParameters>) -> Self {
         let mut gk_map = HashMap::new();
         let n = params.degree;
         for i in 0..ilog2(n) {
@@ -80,7 +228,14 @@ impl Evaluation {
             gk_map.insert(k, gk_i);
         }
 
-        Evaluation { gk: gk_map }
+        let mut m = Poly::try_from_vec_i64(&sk.params.rq_context, &sk.coeffs);
+        m.change_representation(Representation::Ntt);
+        let sk_rgsw = RgswCt::encrypt_poly(sk, &m);
+
+        Evaluation {
+            gk: gk_map,
+            sk_rgsw,
+        }
     }
 
     pub fn unpack(&self, ct: &BfvCipherText) -> Vec<BfvCipherText> {
@@ -158,15 +313,62 @@ mod tests {
     }
 
     #[test]
-    fn client_encode() {
-        let params = Arc::new(BfvParameters::default(2, 64));
+    fn query() {
+        let mut rng = thread_rng();
+        let degree = 2048;
+        let ct_moduli = BfvParameters::generate_moduli(&[50, 55, 55], degree).unwrap();
+        dbg!(&ct_moduli);
+        let pt_moduli: u64 = (1 << 20) + (1 << 19) + (1 << 17) + (1 << 16) + (1 << 14) + 1;
+        let params = Arc::new(BfvParameters::new(degree, pt_moduli, ct_moduli, 10));
 
-        let query_dims = [2u64];
+        // Pre-processing
+        let db: Vec<BfvPlaintext> = (0..8)
+            .into_iter()
+            .map(|i| {
+                let v = [i, i, i, i];
+                BfvPlaintext::new(&params, &v.to_vec())
+            })
+            .collect();
+
+        // Client side
+        let sk = &SecretKey::generate(&params);
+        let query = vec![3usize, 0];
+        let client = Client::new(4, 2);
+        let query_pt = client.encode(query, db.len(), &params);
+        let query_pt = BfvPlaintext::new(&params, &query_pt);
+        let query_ct = sk.encrypt(&query_pt);
+        let eval_key = Evaluation::build(&sk, &params);
+
+        // Server side
+        let server = Server::new(4, 2, &db);
+        let res_ct = server.decode(
+            params.rq_context.rns.moduli.len(),
+            &query_ct,
+            &eval_key,
+            &sk,
+        );
+
+        // Client
+        dbg!(res_ct.len());
+        let res_ct = res_ct[0].clone();
+        let res_pt = sk.decrypt(&res_ct);
+        println!("{:?}", res_pt.values);
+    }
+
+    #[test]
+    fn client_encode() {
+        let mut rng = thread_rng();
+        let degree = 2048;
+        let ct_moduli = BfvParameters::generate_moduli(&[50, 55, 55], degree).unwrap();
+        let pt_moduli: u64 = (1 << 20) + (1 << 19) + (1 << 17) + (1 << 16) + (1 << 14) + 1;
+        let params = Arc::new(BfvParameters::new(degree, pt_moduli, ct_moduli, 10));
+
+        let query_dims = [123usize, 2, 3];
         let client = Client::default();
-        let query = client.encode(query_dims.to_vec(), 64, &params);
+        let query = client.encode(query_dims.to_vec(), 2048, &params);
         dbg!(&query);
         let sk = SecretKey::generate(&params);
-        let evaluation = Evaluation::new(&sk, &params);
+        let evaluation = Evaluation::build(&sk, &params);
 
         let pt = BfvPlaintext::new(&params, &query);
         let ct = sk.encrypt(&pt);
@@ -177,8 +379,8 @@ mod tests {
             let p = sk.decrypt(c);
             query_r.push(p.values[0]);
         });
-        dbg!(query);
-        dbg!(query_r);
+        dbg!(&query);
+        dbg!(&query_r[..query.len()]);
     }
 
     #[test]
@@ -205,7 +407,7 @@ mod tests {
         // let params = Arc::new(BfvParameters::default(2, 2048));
         let sk = SecretKey::generate(&params);
 
-        let evaluation = Evaluation::new(&sk, &params);
+        let evaluation = Evaluation::build(&sk, &params);
 
         let binary_dist = Uniform::from(0..pt_moduli);
         let values = rng.sample_iter(binary_dist).take(2048).collect();

@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
-use crate::rq::Representation;
-use itertools::izip;
+use crate::{bfv::BfvCipherText, rq::Representation};
+use itertools::{izip, Itertools};
 use rand::{thread_rng, Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 
@@ -94,6 +94,35 @@ impl Ksk {
         });
 
         (c0, c1)
+    }
+
+    pub fn try_from_decomposed_rlwes(
+        params: &Arc<BfvParameters>,
+        cts: &Vec<BfvCipherText>,
+    ) -> Self {
+        assert!(params.rq_context.moduli.len() == cts.len());
+
+        let c0 = cts
+            .iter()
+            .map(|c| {
+                assert!(&c.params == params);
+                c.cts[0].clone()
+            })
+            .collect();
+        let c1 = cts
+            .iter()
+            .map(|c| {
+                assert!(&c.params == params);
+                c.cts[1].clone()
+            })
+            .collect();
+
+        Ksk {
+            params: params.clone(),
+            c0,
+            c1,
+            ct_context: params.rq_context.clone(),
+        }
     }
 }
 

@@ -469,7 +469,7 @@ impl From<&Poly> for Vec<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bfv::BfvParameters;
+    use crate::bfv::{BfvParameters, SecretKey};
 
     // Moduli to be used in tests.
     const MODULI: &[u64; 1] = &[
@@ -479,6 +479,16 @@ mod tests {
         // 4611686018232352769,
         // 4611686018171535361,
     ];
+
+    #[test]
+    fn trial() {
+        let mut rng = thread_rng();
+        let values = sample_vec_cbd(8, 10, &mut rng);
+
+        let rq = Arc::new(RqContext::new(vec![1153u64], 8));
+        let v = Poly::try_from_vec_i64(&rq, &values);
+        dbg!(v);
+    }
 
     #[test]
     fn change_representation() {
