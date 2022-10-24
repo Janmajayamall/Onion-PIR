@@ -128,81 +128,88 @@ impl Server {
                     .enumerate()
                     .map(|(row_index, row_ksk_cts)| {
                         // FIXME: Remove this
-                        if row_index == 0 {
-                            let g = RgswCt::encrypt(
-                                sk,
-                                &BfvPlaintext {
-                                    params: query_ct.params.clone(),
-                                    values: vec![1u64].into_boxed_slice(),
-                                },
-                            );
 
-                            izip!(g.ksk1.c0.iter(), g.ksk1.c1.iter()).for_each(|(c0, c1)| {
-                                let p = sk.decrypt(&BfvCipherText {
-                                    params: sk.params.clone(),
-                                    cts: vec![c0.clone(), c1.clone()],
-                                });
-                                println!("b_i: {:?}", p.values);
+                        let g = RgswCt::encrypt(
+                            sk,
+                            &BfvPlaintext {
+                                params: query_ct.params.clone(),
+                                values: vec![1u64].into_boxed_slice(),
+                            },
+                        );
+
+                        izip!(g.ksk0.c0.iter(), g.ksk0.c1.iter()).for_each(|(c0, c1)| {
+                            let p = sk.decrypt(&BfvCipherText {
+                                params: sk.params.clone(),
+                                cts: vec![c0.clone(), c1.clone()],
                             });
+                            println!("skb_i: {:?}", p.values);
+                        });
 
-                            return g;
+                        izip!(g.ksk1.c0.iter(), g.ksk1.c1.iter()).for_each(|(c0, c1)| {
+                            let p = sk.decrypt(&BfvCipherText {
+                                params: sk.params.clone(),
+                                cts: vec![c0.clone(), c1.clone()],
+                            });
+                            println!("b_i: {:?}", p.values);
+                        });
+
+                        let s_row_ksk_cts = row_ksk_cts
+                            .iter()
+                            .enumerate()
+                            .map(|(g_index, a)| {
+                                // a is `a * g_i`
+                                let (c0, c1) =
+                                    RgswCt::external_product(&eval_key.sk_rgsw, &a.clone());
+
+                                // sk * a * g_i
+                                let f = BfvCipherText {
+                                    params: a.params.clone(),
+                                    cts: vec![c0, c1],
+                                };
+
+                                println!(
+                                    "dim: {}, row: {}, g_i: {}, fi: {:?}, ai: {:?}",
+                                    dim_index,
+                                    row_index,
+                                    g_index,
+                                    sk.decrypt(&f).values,
+                                    sk.decrypt(&a).values
+                                );
+
+                                f
+                            })
+                            .collect();
+
+                        let s_row_ksk =
+                            Ksk::try_from_decomposed_rlwes(&row_ksk_cts[0].params, &s_row_ksk_cts);
+                        let row_ksk = Ksk::try_from_decomposed_rlwes(
+                            &row_ksk_cts[0].params,
+                            &row_ksk_cts.to_vec(),
+                        );
+                        // return RgswCt::try_from_ksks(&s_row_ksk, &row_ksk);
+
+                        // ATTENTION: NOISE FOR EXTERNAL PRODUCT ISN'T UNDER CONTROL
+                        if row_index == 0 {
+                            return RgswCt::try_from_ksks(&g.ksk0, &g.ksk1);
                         } else {
-                            let s_row_ksk_cts = row_ksk_cts
-                                .iter()
-                                .enumerate()
-                                .map(|(g_index, a)| {
-                                    // a is `a * g_i`
-                                    let (c0, c1) =
-                                        RgswCt::external_product(&eval_key.sk_rgsw, &a.clone());
-
-                                    // sk * a * g_i
-                                    let f = BfvCipherText {
-                                        params: a.params.clone(),
-                                        cts: vec![c0, c1],
-                                    };
-
-                                    println!(
-                                        "dim: {}, row: {}, g_i: {}, f: {:?}, a: {:?}",
-                                        dim_index,
-                                        row_index,
-                                        g_index,
-                                        sk.decrypt(&f).values,
-                                        sk.decrypt(&a).values
-                                    );
-
-                                    f
-                                })
-                                .collect();
-
-                            let row_ksk = Ksk::try_from_decomposed_rlwes(
-                                &row_ksk_cts[0].params,
-                                &row_ksk_cts.to_vec(),
-                            );
-                            let s_row_ksk = Ksk::try_from_decomposed_rlwes(
-                                &row_ksk_cts[0].params,
-                                &s_row_ksk_cts,
-                            );
-
-                            let v = RgswCt::try_from_ksks(&s_row_ksk, &row_ksk);
-
-                            // checking RGSW
-                            // let one_pt = BfvPlaintext::new(&sk.params, &vec![1u64]);
-                            // let one_ct = sk.encrypt(&one_pt);
-                            // let one_product = RgswCt::external_product(&v, &one_ct);
-                            // let one_product = BfvCipherText {
-                            //     params: sk.params.clone(),
-                            //     cts: vec![one_product.0, one_product.1],
-                            // };
-                            // let one_res = sk.decrypt(&one_product);
-                            // println!(
-                            //     "dim: {}, row: {}, {:?}",
-                            //     dim_index,
-                            //     row_index,
-                            //     one_res.values.iter().map(|c| c / 64u64.pow(2))
-                            // );
-
-                            return v;
+                            return RgswCt::try_from_ksks(&s_row_ksk, &row_ksk);
                         }
+
+                        // checking RGSW
+                        // let one_pt = BfvPlaintext::new(&sk.params, &vec![1u64]);
+                        // let one_ct = sk.encrypt(&one_pt);
+                        // let one_product = RgswCt::external_product(&v, &one_ct);
+                        // let one_product = BfvCipherText {
+                        //     params: sk.params.clone(),
+                        //     cts: vec![one_product.0, one_product.1],
+                        // };
+                        // let one_res = sk.decrypt(&one_product);
+                        // println!(
+                        //     "dim: {}, row: {}, {:?}",
+                        //     dim_index,
+                        //     row_index,
+                        //     one_res.values.iter().map(|c| c / 64u64.pow(2))
+                        // );
                     })
                     .collect()
             })
@@ -301,6 +308,7 @@ impl Evaluation {
 
         let mut m = Poly::try_from_vec_i64(&sk.params.rq_context, &sk.coeffs);
         m.change_representation(Representation::Ntt);
+        m = -&m;
         let sk_rgsw = RgswCt::encrypt_poly(sk, &m);
 
         Evaluation {

@@ -235,8 +235,11 @@ mod tests {
     use crate::{
         bfv::{BfvParameters, BfvPlaintext},
         poly::Modulus,
+        rns::RnsContext,
         rq::RqContext,
     };
+    use itertools::izip;
+    use num_bigint::BigUint;
     use rand::thread_rng;
     use std::sync::Arc;
 
@@ -249,28 +252,82 @@ mod tests {
             vec![1125899906840833, 36028797018963841, 36028797018963457],
             10,
         ));
-        // let params = Arc::new(BfvParameters::default(6, 8));
         let sk = SecretKey::generate(&params);
-
-        // let m = BfvPlaintext::new(&params, &vec![1u64]);
-        // let rgsw = RgswCt::encrypt(&sk, &m);
+        let mut sk_poly = Poly::try_from_vec_i64(&params.rq_context, &sk.coeffs);
+        sk_poly.change_representation(Representation::Ntt);
 
         let mut m = Poly::try_from_vec_i64(&sk.params.rq_context, &sk.coeffs);
         m.change_representation(Representation::Ntt);
-        let rgsw = RgswCt::encrypt_poly(&sk, &m);
+        m = -&m;
+        let sk_rgsw = RgswCt::encrypt_poly(&sk, &m);
 
-        // checking RGSW
-        let one_pt = BfvPlaintext::new(&sk.params, &vec![1u64]);
-        let one_ct = sk.encrypt(&one_pt);
-        let one_product = RgswCt::external_product(&rgsw, &one_ct);
-        let one_product = BfvCipherText {
-            params: sk.params.clone(),
-            cts: vec![one_product.0, one_product.1],
-        };
-        let one_res = sk.decrypt(&one_product);
-        println!(
-            "{:?}",
-            Modulus::new(pt_moduli).reduce_vec_u64(&one_res.values)
+        let pt_one = BfvPlaintext::new(&params, &vec![1u64]);
+        let ex_rgsw = RgswCt::encrypt(&sk, &pt_one);
+
+        let bis = [775517u64, 298083, 712258]
+            .iter()
+            .map(|gi| sk.encrypt(&BfvPlaintext::new(&params, &vec![*gi])));
+        let skis: Vec<BfvCipherText> = bis
+            .map(|bi| {
+                let (c0, c1) = RgswCt::external_product(&sk_rgsw, &bi);
+                BfvCipherText {
+                    params: params.clone(),
+                    cts: vec![c0.clone(), c1.clone()],
+                }
+            })
+            .collect();
+
+        // dbg!(ex_rgsw.ksk0.c0.len());
+        // dbg!(ex_rgsw.ksk0.c1.len());
+        // dbg!(skis.len());
+
+        izip!(ex_rgsw.ksk0.c0.iter(), ex_rgsw.ksk0.c1.iter(), skis.iter()).for_each(
+            |(ec0, ec1, cti)| {
+                println!(
+                    "Decrypted ex {:?}",
+                    sk.decrypt(&BfvCipherText {
+                        params: params.clone(),
+                        cts: vec![ec0.clone(), ec1.clone()]
+                    })
+                    .values
+                );
+
+                println!(
+                    "Decrypted ski {:?}",
+                    sk.decrypt(&BfvCipherText {
+                        params: params.clone(),
+                        cts: vec![cti.cts[0].clone(), cti.cts[1].clone()]
+                    })
+                    .values
+                );
+
+                let mut ex_poly = ec1 * &sk_poly;
+                ex_poly += ec0;
+
+                let mut poly = &cti.cts[1] * &sk_poly;
+                poly += &cti.cts[0];
+
+                let mut sub = &ex_poly - &poly;
+
+                ex_poly.change_representation(Representation::PowerBasis);
+                poly.change_representation(Representation::PowerBasis);
+                sub.change_representation(Representation::PowerBasis);
+
+                let rns = RnsContext::new(&params.ciphertext_moduli.clone());
+                izip!(
+                    Vec::<BigUint>::from(&ex_poly).iter(),
+                    Vec::<BigUint>::from(&poly).iter(),
+                    Vec::<BigUint>::from(&sub).iter()
+                )
+                .for_each(|(ex, p, s)| {
+                    println!(
+                        "{} {} {}",
+                        (rns.modulus() - ex).bits(),
+                        (rns.modulus() - p).bits(),
+                        (rns.modulus() - s).bits()
+                    );
+                });
+            },
         );
     }
 
