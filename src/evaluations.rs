@@ -9,7 +9,7 @@ use crate::{
 use itertools::{enumerate, izip, Itertools};
 use num_bigint::BigUint;
 use num_bigint_dig::{BigUint as BigUintDig, ModInverse};
-use num_traits::{FromPrimitive, ToPrimitive};
+use num_traits::{FromPrimitive, One, ToPrimitive, Zero};
 use sha2::digest::typenum::bit;
 use std::{collections::HashMap, default::Default, sync::Arc, vec};
 
@@ -701,14 +701,16 @@ mod tests {
         let sk = SecretKey::generate(&params);
 
         let constant = params.rq_context.rns.garner[0].clone();
-        dbg!(constant.bits());
 
-        let decomposed_cts = decompose_constant(&constant, &sk, 128, 4);
-        let base = BigUint::from_u64(1 << 4).unwrap();
+        let decomp_bits = 64usize;
+        let parent_bits = 128usize;
+
+        let decomposed_cts = decompose_constant(&constant, &sk, parent_bits, decomp_bits);
+        let base = BigUint::from_u128(1 << decomp_bits).unwrap();
         let mut final_value = decomposed_cts[0].clone();
-        for i in (1..32) {
-            let pow = base.pow(i);
-            let value = &decomposed_cts[i as usize] * &pow;
+        for i in (1..(parent_bits / decomp_bits)) {
+            let pow = base.pow(i as u32);
+            let value = &decomposed_cts[i] * &pow;
             final_value = &final_value + &value;
         }
 
@@ -728,15 +730,71 @@ mod tests {
         dbg!(sk.decrypt(&final_value).values);
         dbg!(measure_noise_tmp(&params, ideal_m, &sk, &final_value));
     }
+
+    #[test]
+    fn test_bit_vector() {
+        let m = BigUint::from_u128(u128::MAX - 1).unwrap();
+        let bits = bit_vector(128, &m);
+
+        let value = bits
+            .iter()
+            .rev()
+            .fold(BigUint::zero(), |acc, bit| (acc * 2usize) + (*bit as u8));
+
+        assert_eq!(value, m);
+    }
+
+    #[test]
+    fn test_decompose_bits() {
+        let value = BigUint::from_u128(u128::MAX - 1).unwrap();
+        let decomposed = decompose_bits(&value, 128, 4);
+        let base = BigUint::one() << 4;
+        let recovered = decomposed
+            .iter()
+            .rev()
+            .fold(BigUint::zero(), |acc, b| (acc * &base) + *b);
+
+        assert_eq!(value, recovered);
+    }
 }
 
-pub fn decompose_bits(m: &BigUint, parent_bits: usize, decomp_bits: usize) -> Vec<u8> {
-    let decomposed_short = m.to_radix_le(1 << decomp_bits);
-    let count = (parent_bits / decomp_bits);
-    let mut decomposed = vec![0u8; count];
-    decomposed.as_mut_slice()[..decomposed_short.len()]
-        .copy_from_slice(decomposed_short.as_slice());
-    decomposed
+pub fn bit_vector(bit_size: usize, m: &BigUint) -> Vec<bool> {
+    let mut bit_vec = vec![false; bit_size];
+
+    let mut value = m.clone();
+    let mask = BigUint::from_usize(1).unwrap();
+    let mut index = 0;
+    while !value.is_zero() {
+        let bit = &value & &mask;
+
+        if bit.is_one() {
+            bit_vec[index] = true;
+        } else {
+            bit_vec[index] = false;
+        }
+
+        value >>= 1;
+        index += 1;
+    }
+
+    bit_vec
+}
+
+pub fn decompose_bits(m: &BigUint, parent_bits: usize, decomp_bits: usize) -> Vec<u64> {
+    let bit_vector = bit_vector(parent_bits, m);
+
+    let decomp_m = bit_vector
+        .chunks(decomp_bits)
+        .into_iter()
+        .map(|chunk| {
+            chunk
+                .iter()
+                .rev()
+                .fold(0u64, |acc, b| acc * 2 + (*b as u64))
+        })
+        .collect();
+
+    decomp_m
 }
 
 // FIXME: This decomposition function isn't constant time
@@ -751,7 +809,7 @@ pub fn decompose_constant(
 
     bits.iter()
         .map(|b| {
-            let pt = BfvPlaintext::new(&sk.params, &vec![(*b) as u64]);
+            let pt = BfvPlaintext::new(&sk.params, &vec![*b]);
             let ct = sk.encrypt(&pt);
             ct
         })
