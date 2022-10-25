@@ -233,6 +233,32 @@ impl SecretKey {
             values: m.into_boxed_slice(),
         }
     }
+
+    /// Measures difference between ideal message value in ct space
+    /// and the real message value in ct space
+    pub fn measure_noise(&self, ct: &BfvCipherText) -> usize {
+        let pt = self.decrypt(ct);
+        let ideal_m = pt.to_poly();
+
+        let mut sk = Poly::try_from_vec_i64(&self.params.rq_context, &self.coeffs);
+        sk.change_representation(Representation::Ntt);
+        let mut m = &ct.cts[1] * &sk;
+        m += &ct.cts[0];
+
+        m -= &ideal_m;
+        m.change_representation(Representation::PowerBasis);
+
+        let mut noise = 0usize;
+        let ct_moduli = &self.params.rq_context.rns.product.clone();
+
+        Vec::<BigUint>::from(&m).iter().for_each(|coeff| {
+            noise = std::cmp::max(
+                noise,
+                std::cmp::min(coeff.bits(), (ct_moduli - coeff).bits()) as usize,
+            );
+        });
+        noise
+    }
 }
 
 #[derive(Clone)]
@@ -287,6 +313,38 @@ impl Mul<&BfvPlaintext> for &BfvCipherText {
 
         let c0 = &self.cts[0] * &pt_poly;
         let c1 = &self.cts[1] * &pt_poly;
+
+        BfvCipherText {
+            params: self.params.clone(),
+            cts: vec![c0, c1],
+        }
+    }
+}
+
+impl Mul<&Poly> for &BfvCipherText {
+    type Output = BfvCipherText;
+    fn mul(self, rhs: &Poly) -> Self::Output {
+        assert!(rhs.context == self.params.rq_context);
+        assert!(rhs.representation == Representation::Ntt);
+
+        let c0 = &self.cts[0] * &rhs;
+        let c1 = &self.cts[1] * &rhs;
+
+        BfvCipherText {
+            params: self.params.clone(),
+            cts: vec![c0, c1],
+        }
+    }
+}
+
+impl Mul<&BigUint> for &BfvCipherText {
+    type Output = BfvCipherText;
+    fn mul(self, rhs: &BigUint) -> Self::Output {
+        let mut rhs = Poly::try_from_bigint(&self.params.rq_context, &[rhs.clone()]);
+        rhs.change_representation(Representation::Ntt);
+
+        let c0 = &self.cts[0] * &rhs;
+        let c1 = &self.cts[1] * &rhs;
 
         BfvCipherText {
             params: self.params.clone(),

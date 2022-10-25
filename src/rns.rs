@@ -28,7 +28,7 @@ impl Debug for RnsContext {
             // .field("q_tilde", &self.q_tilde)
             // .field("q_tilde_shoup", &self.q_tilde_shoup)
             // .field("q_star", &self.q_star)
-            .field("garner", &self.garner)
+            // .field("garner", &self.garner)
             .field("product", &self.product)
             .finish()
     }

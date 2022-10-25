@@ -2,6 +2,8 @@ use std::sync::Arc;
 
 use crate::{bfv::BfvCipherText, rq::Representation};
 use itertools::{izip, Itertools};
+use num_bigint::BigUint;
+use num_traits::FromPrimitive;
 use rand::{thread_rng, Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
 
@@ -55,7 +57,14 @@ impl Ksk {
 
             // m = garner * from
             let mut m = from.clone();
+            // dbg!(&m);
             m *= garner;
+            // dbg!(&m);
+            // println!();
+
+            // let mut fs = m.clone();
+            // // fs.change_representation(Representation::PowerBasis);
+            // dbg!(fs.coefficients());
 
             // -(a*s) + e + m
             b += &m;

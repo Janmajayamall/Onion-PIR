@@ -429,7 +429,9 @@ impl MulAssign<&Poly> for Poly {
 
 impl MulAssign<&BigUint> for Poly {
     fn mul_assign(&mut self, rhs: &BigUint) {
+        dbg!();
         let mut rhs = Poly::try_from_bigint(&self.context, &[rhs.clone()]);
+
         rhs.change_representation(Representation::Ntt);
         assert!(self.representation == Representation::Ntt);
         *self *= &rhs;

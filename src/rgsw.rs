@@ -237,42 +237,69 @@ mod tests {
         poly::Modulus,
         rns::RnsContext,
         rq::RqContext,
+        utils::generate_prime,
     };
     use itertools::izip;
     use num_bigint::BigUint;
+    use num_traits::FromPrimitive;
     use rand::thread_rng;
     use std::sync::Arc;
 
     #[test]
     fn encrypt_poly() {
-        let pt_moduli: u64 = (1 << 20) + (1 << 19) + (1 << 17) + (1 << 16) + (1 << 14) + 1;
+        // let pt_moduli: u64 = 4611686018326724609;
+        let pt_moduli = generate_prime(60, 2 * 1048576, (1 << 60) - 1).unwrap();
+        let ct_moduli = BfvParameters::generate_moduli(&[61, 61, 61], 64).unwrap();
+
         let params = Arc::new(BfvParameters::new(
-            64,
-            pt_moduli,
-            vec![1125899906840833, 36028797018963841, 36028797018963457],
-            10,
+            64, pt_moduli,
+            // vec![1125899906840833, 36028797018963841, 36028797018963457],
+            ct_moduli, 10,
         ));
+        params.rq_context.rns.garner.iter().for_each(|gi| {
+            dbg!(gi);
+            dbg!(gi % pt_moduli);
+        });
+
         let sk = SecretKey::generate(&params);
         let mut sk_poly = Poly::try_from_vec_i64(&params.rq_context, &sk.coeffs);
         sk_poly.change_representation(Representation::Ntt);
 
         let mut m = Poly::try_from_vec_i64(&sk.params.rq_context, &sk.coeffs);
         m.change_representation(Representation::Ntt);
-        m = -&m;
         let sk_rgsw = RgswCt::encrypt_poly(&sk, &m);
 
         let pt_one = BfvPlaintext::new(&params, &vec![1u64]);
         let ex_rgsw = RgswCt::encrypt(&sk, &pt_one);
 
-        let bis = [775517u64, 298083, 712258]
-            .iter()
-            .map(|gi| sk.encrypt(&BfvPlaintext::new(&params, &vec![*gi])));
-        let skis: Vec<BfvCipherText> = bis
-            .map(|bi| {
-                let (c0, c1) = RgswCt::external_product(&sk_rgsw, &bi);
+        let bis = [
+            1084615932887104652u64,
+            88464820691527941,
+            1132762255576341106,
+        ]
+        .iter()
+        .map(|gi| sk.encrypt(&BfvPlaintext::new(&params, &vec![*gi])));
+        // let skis: Vec<BfvCipherText> = bis
+        //     .map(|bi| {
+        //         let (c0, c1) = RgswCt::external_product(&sk_rgsw, &bi);
+        //         BfvCipherText {
+        //             params: params.clone(),
+        //             cts: vec![c0.clone(), c1.clone()],
+        //         }
+        //     })
+        //     .collect();
+        let skis: Vec<BfvCipherText> = izip!(ex_rgsw.ksk1.c0.iter(), ex_rgsw.ksk1.c1.iter())
+            .map(|(c0, c1)| {
+                let (c02, c12) = RgswCt::external_product(
+                    &sk_rgsw,
+                    &BfvCipherText {
+                        params: params.clone(),
+                        cts: vec![c0.clone(), c1.clone()],
+                    },
+                );
                 BfvCipherText {
                     params: params.clone(),
-                    cts: vec![c0.clone(), c1.clone()],
+                    cts: vec![c02.clone(), c12.clone()],
                 }
             })
             .collect();
