@@ -2,13 +2,12 @@ use crate::{
     ntt::NttOperator,
     poly::{self, Modulus},
     rns::{RnsContext, RnsScaler, ScalingFactor},
-    utils::sample_vec_cbd,
+    utils::{decompose_bits, sample_vec_cbd},
 };
 
 use itertools::{izip, Itertools};
-use ndarray::{s, Array2, ArrayView2, Axis};
+use ndarray::{s, Array2, Array3, ArrayView2, Axis};
 use num_bigint::BigUint;
-use num_bigint_dig::BigUint as BigUintDig;
 use num_traits::ToPrimitive;
 use rand::{thread_rng, CryptoRng, RngCore, SeedableRng};
 use rand_chacha::ChaCha8Rng;
@@ -40,7 +39,19 @@ impl Substitution {
     }
 }
 
-/// Polt scaler
+#[derive(Clone, PartialEq, Debug)]
+pub struct BitDecomposition {
+    pub base: usize,
+    pub l: usize,
+}
+
+impl BitDecomposition {
+    fn new(base: usize, l: usize) -> Self {
+        Self { base, l }
+    }
+}
+
+/// Poly scaler
 #[derive(Debug, Clone, PartialEq)]
 pub struct RqScaler {
     from: Arc<RqContext>,
@@ -106,6 +117,7 @@ impl RqScaler {
             context: self.to.clone(),
             coefficients: new_coefficients,
             representation: Representation::PowerBasis,
+            coefficients_decomp: None,
         }
     }
 }
@@ -118,6 +130,7 @@ pub struct RqContext {
     pub rns: Arc<RnsContext>,
     pub ntt_ops: Vec<NttOperator>,
     pub degree: usize,
+    pub bit_decomposition: BitDecomposition,
 }
 
 impl Debug for RqContext {
@@ -137,7 +150,7 @@ impl Debug for RqContext {
 }
 
 impl RqContext {
-    pub fn new(moduli_64: Vec<u64>, degree: usize) -> Self {
+    pub fn new(moduli_64: Vec<u64>, degree: usize, bit_decomposition: BitDecomposition) -> Self {
         let rns = Arc::new(RnsContext::new(&moduli_64));
         let moduli = rns.moduli.clone();
         let ntt_ops = moduli.iter().map(|m| NttOperator::new(m, degree)).collect();
@@ -148,6 +161,7 @@ impl RqContext {
             rns,
             ntt_ops,
             degree,
+            bit_decomposition,
         }
     }
 }
@@ -164,6 +178,7 @@ pub struct Poly {
     pub context: Arc<RqContext>,
     pub representation: Representation,
     coefficients: Array2<u64>,
+    coefficients_decomp: Option<Array3<u64>>,
 }
 
 impl Poly {
@@ -211,6 +226,37 @@ impl Poly {
         }
     }
 
+    pub fn apply_bit_decomposition(&mut self) {
+        let mut poly = Array3::<u64>::zeros((
+            self.context.moduli.len(),
+            self.context.bit_decomposition.l,
+            self.context.degree,
+        ));
+
+        izip!(self.coefficients().outer_iter(), self.context.moduli.iter())
+            .enumerate()
+            .for_each(|(row_index, (cq, q))| {
+                for i in (0..self.context.bit_decomposition.l) {
+                    // // q / B^i * cq
+                    // let p = Poly::fr
+
+                    poly.slice_mut(s![row_index, i, ..]);
+                }
+
+                cq.iter().enumerate().for_each(|(col_index, v)| {
+                    let parent_bits = q.bits();
+                    let base_bits = self.context.bit_decomposition.base;
+                    let decomposed = decompose_bits(*v, parent_bits as usize, base_bits);
+
+                    let g = poly.slice_mut(s![row_index, col_index, ..]);
+                });
+
+                izip!(cq.outer_iter()).for_each(|(c)| {
+                    // dbg!(cq, &pq);
+                })
+            });
+    }
+
     pub fn substitute(&self, a: &Substitution) -> Poly {
         let mut poly = Poly::zero(&self.context, self.representation.clone());
 
@@ -256,6 +302,7 @@ impl Poly {
             context: ctx.clone(),
             representation,
             coefficients: Array2::zeros((ctx.moduli.len(), ctx.degree)),
+            coefficients_decomp: None,
         }
     }
 
@@ -429,12 +476,20 @@ impl MulAssign<&Poly> for Poly {
 
 impl MulAssign<&BigUint> for Poly {
     fn mul_assign(&mut self, rhs: &BigUint) {
-        dbg!();
         let mut rhs = Poly::try_from_bigint(&self.context, &[rhs.clone()]);
 
         rhs.change_representation(Representation::Ntt);
         assert!(self.representation == Representation::Ntt);
         *self *= &rhs;
+    }
+}
+
+impl Mul<&BigUint> for &Poly {
+    type Output = Poly;
+    fn mul(self, rhs: &BigUint) -> Self::Output {
+        let mut tmp = self.clone();
+        tmp *= rhs;
+        tmp
     }
 }
 
@@ -501,19 +556,13 @@ mod tests {
     ];
 
     #[test]
-    fn trial() {
-        let mut rng = thread_rng();
-        let values = sample_vec_cbd(8, 10, &mut rng);
-
-        let rq = Arc::new(RqContext::new(vec![1153u64], 8));
-        let v = Poly::try_from_vec_i64(&rq, &values);
-        dbg!(v);
-    }
-
-    #[test]
     fn change_representation() {
         for _ in 0..100 {
-            let params = Arc::new(BfvParameters::default(1, 8));
+            let params = Arc::new(BfvParameters::default(
+                1,
+                8,
+                BitDecomposition { base: 4, l: 8 },
+            ));
             let rq = params.rq_context.clone();
             let mut rng = thread_rng();
 
@@ -522,6 +571,8 @@ mod tests {
             p.change_representation(Representation::Ntt);
             p.change_representation(Representation::PowerBasis);
 
+            p.apply_bit_decomposition();
+
             assert_eq!(p, q)
         }
     }
@@ -529,7 +580,8 @@ mod tests {
     #[test]
     fn substitute() {
         let mut rng = thread_rng();
-        let ctx = Arc::new(RqContext::new(MODULI.to_vec(), 8));
+        let bit_decomp = BitDecomposition::new(4, 8);
+        let ctx = Arc::new(RqContext::new(MODULI.to_vec(), 8, bit_decomp));
 
         let mut p = Poly::random(&ctx, &mut rng, Representation::PowerBasis);
         let q = p.clone();

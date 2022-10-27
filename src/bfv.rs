@@ -1,6 +1,6 @@
 use crate::ksk::Ksk;
 use crate::rns::ScalingFactor;
-use crate::rq::{Poly, Representation, RqContext, RqScaler, Substitution};
+use crate::rq::{BitDecomposition, Poly, Representation, RqContext, RqScaler, Substitution};
 use crate::{
     poly::Modulus,
     utils::{generate_prime, sample_vec_cbd},
@@ -10,6 +10,7 @@ use num_bigint::BigUint;
 use num_traits::{FromPrimitive, ToPrimitive};
 use rand::{thread_rng, Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
+use sha2::digest::typenum::bit;
 use std::{
     fmt::Debug,
     ops::{Add, Mul, Sub},
@@ -40,9 +41,18 @@ impl BfvParameters {
         plaintext_modulus_u64: u64,
         ciphertext_moduli: Vec<u64>,
         variance: usize,
+        bit_decomp: BitDecomposition,
     ) -> Self {
-        let pt_context = Arc::new(RqContext::new(vec![ciphertext_moduli[0]], degree));
-        let rq_context = Arc::new(RqContext::new(ciphertext_moduli.clone(), degree));
+        let pt_context = Arc::new(RqContext::new(
+            vec![ciphertext_moduli[0]],
+            degree,
+            bit_decomp.clone(),
+        ));
+        let rq_context = Arc::new(RqContext::new(
+            ciphertext_moduli.clone(),
+            degree,
+            bit_decomp,
+        ));
 
         // scaler for scaling down
         // delta_m by (t/q) (i.e. from ct space to pt space)
@@ -86,9 +96,13 @@ impl BfvParameters {
         }
     }
 
-    pub fn default(num_of_moduli: usize, degree: usize) -> BfvParameters {
+    pub fn default(
+        num_of_moduli: usize,
+        degree: usize,
+        bit_decomp: BitDecomposition,
+    ) -> BfvParameters {
         let moduli = BfvParameters::generate_moduli(&vec![62usize; num_of_moduli], degree).unwrap();
-        BfvParameters::new(degree, 1153u64, moduli, 10)
+        BfvParameters::new(degree, 1153u64, moduli, 10, bit_decomp)
     }
 
     /// Generate ciphertext moduli with the specified sizes
@@ -327,8 +341,8 @@ impl Mul<&Poly> for &BfvCipherText {
         assert!(rhs.context == self.params.rq_context);
         assert!(rhs.representation == Representation::Ntt);
 
-        let c0 = &self.cts[0] * &rhs;
-        let c1 = &self.cts[1] * &rhs;
+        let c0 = &self.cts[0] * rhs;
+        let c1 = &self.cts[1] * rhs;
 
         BfvCipherText {
             params: self.params.clone(),
@@ -340,11 +354,8 @@ impl Mul<&Poly> for &BfvCipherText {
 impl Mul<&BigUint> for &BfvCipherText {
     type Output = BfvCipherText;
     fn mul(self, rhs: &BigUint) -> Self::Output {
-        let mut rhs = Poly::try_from_bigint(&self.params.rq_context, &[rhs.clone()]);
-        rhs.change_representation(Representation::Ntt);
-
-        let c0 = &self.cts[0] * &rhs;
-        let c1 = &self.cts[1] * &rhs;
+        let c0 = &self.cts[0] * rhs;
+        let c1 = &self.cts[1] * rhs;
 
         BfvCipherText {
             params: self.params.clone(),
@@ -435,15 +446,14 @@ impl GaliosKey {
 mod tests {
     use super::*;
 
-    fn ops() {
-        let mut rng = thread_rng();
-        let params = Arc::new(BfvParameters::default(6, 8));
-    }
-
     #[test]
     fn encrypt_decrypt() {
         let mut rng = thread_rng();
-        let params = Arc::new(BfvParameters::default(6, 8));
+        let params = Arc::new(BfvParameters::default(
+            6,
+            8,
+            BitDecomposition { base: 4, l: 8 },
+        ));
 
         for _ in 0..100 {
             let sk = SecretKey::generate(&params);
@@ -465,7 +475,11 @@ mod tests {
     fn galois_key() {
         for _ in 0..100 {
             let mut rng = thread_rng();
-            let params = Arc::new(BfvParameters::default(2, 8));
+            let params = Arc::new(BfvParameters::default(
+                2,
+                8,
+                BitDecomposition { base: 4, l: 8 },
+            ));
             let sk = SecretKey::generate(&params);
 
             let subs = Substitution::new(3);
@@ -481,6 +495,7 @@ mod tests {
             let pt_ctx = Arc::new(RqContext::new(
                 vec![params.plaintext_modulus_u64],
                 params.degree,
+                BitDecomposition { base: 4, l: 8 },
             ));
             let expected_vr = Poly::try_from_vec_u64(&pt_ctx, &v);
 
@@ -491,45 +506,3 @@ mod tests {
         }
     }
 }
-
-// impl BfvCipherText {
-//     pub fn add_ciphertexts(ct0: &BfvCipherText, ct1: &BfvCipherText) -> Self {
-//         debug_assert!(ct0.params == ct1.params);
-//         let c0 = &ct0.c[0] + &ct1.c[0];
-//         let c1 = &ct0.c[1] + &ct1.c[1];
-//         BfvCipherText::new(&ct0.params, vec![c0, c1])
-//     }
-
-//     pub fn sub_ciphertexts(ct0: &BfvCipherText, ct1: &BfvCipherText) -> Self {
-//         debug_assert!(ct0.params == ct1.params);
-//         let ct1 = BfvCipherText::negate(ct1);
-//         BfvCipherText::add_ciphertexts(ct0, &ct1)
-//     }
-
-//     pub fn negate(ct: &BfvCipherText) -> BfvCipherText {
-//         // to negate: -1 * Ct
-//         // -1 mod t == t-1 mod t
-//         // TODO: Handle such ops in a better way
-//         BfvCipherText::multiply_constant(ct, ct.params.t - 1)
-//     }
-
-//     pub fn multiply_pt_poly(ct: &BfvCipherText, pt_poly: &Poly) -> BfvCipherText {
-//         // plaintext polynomial must be Rt
-//         assert!(pt_poly.ctx.moduli.q <= ct.params.t);
-//         let mut pt_poly = pt_poly.clone();
-//         pt_poly.switch_context(&ct.params.poly_ctx);
-
-//         let c0 = &ct.c[0] * &pt_poly;
-//         let c1 = &ct.c[1] * &pt_poly;
-//         BfvCipherText::new(&ct.params, vec![c0, c1])
-//     }
-
-//     pub fn multiply_constant(ct: &BfvCipherText, value: u64) -> BfvCipherText {
-//         // constant must be in Z_t
-//         assert!(value < ct.params.t);
-
-//         let c0 = &ct.c[0] * value;
-//         let c1 = &ct.c[1] * value;
-//         BfvCipherText::new(&ct.params, vec![c0, c1])
-//     }
-// }

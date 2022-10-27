@@ -392,7 +392,7 @@ mod tests {
         bfv::{BfvParameters, BfvPlaintext},
         ksk,
         rns::RnsContext,
-        rq::Representation,
+        rq::{BitDecomposition, Representation},
         utils::generate_prime,
     };
     use num_bigint::BigUint;
@@ -401,24 +401,16 @@ mod tests {
     use rand_distr::Uniform;
 
     #[test]
-    fn trial() {
-        let params = Arc::new(BfvParameters::default(6, 8));
-        let mut v = Poly::try_from_vec_u64(&params.rq_context, &[1]);
-        v.change_representation(Representation::Ntt);
-        let f = BigUint::from_usize(10usize).unwrap();
-        v *= &f;
-        v.change_representation(Representation::PowerBasis);
-        dbg!(v);
-    }
-
-    #[test]
     fn query() {
         let mut rng = thread_rng();
         let degree = 64;
         let pt_moduli = generate_prime(60, 2 * 1048576, (1 << 60) - 1).unwrap();
         let ct_moduli = BfvParameters::generate_moduli(&[62, 62, 62, 62, 62], degree).unwrap();
         // let params = Arc::new(BfvParameters::new(degree, pt_moduli, ct_moduli, 10));
-        let params = Arc::new(BfvParameters::new(degree, pt_moduli, ct_moduli, 10));
+        let bit_decomp = BitDecomposition { base: 4, l: 8 };
+        let params = Arc::new(BfvParameters::new(
+            degree, pt_moduli, ct_moduli, 10, bit_decomp,
+        ));
 
         let degree = 64;
 
@@ -462,7 +454,10 @@ mod tests {
         let degree = 2048;
         let ct_moduli = BfvParameters::generate_moduli(&[50, 55, 55], degree).unwrap();
         let pt_moduli: u64 = (1 << 20) + (1 << 19) + (1 << 17) + (1 << 16) + (1 << 14) + 1;
-        let params = Arc::new(BfvParameters::new(degree, pt_moduli, ct_moduli, 10));
+        let bit_decomp = BitDecomposition { base: 4, l: 8 };
+        let params = Arc::new(BfvParameters::new(
+            degree, pt_moduli, ct_moduli, 10, bit_decomp,
+        ));
 
         let sk = SecretKey::generate(&params);
 
@@ -492,7 +487,10 @@ mod tests {
         let degree = 64;
         let ct_moduli = BfvParameters::generate_moduli(&[50, 55, 55], degree).unwrap();
         let pt_moduli: u64 = (1 << 20) + (1 << 19) + (1 << 17) + (1 << 16) + (1 << 14) + 1;
-        let params = Arc::new(BfvParameters::new(degree, pt_moduli, ct_moduli, 10));
+        let bit_decomp = BitDecomposition { base: 4, l: 8 };
+        let params = Arc::new(BfvParameters::new(
+            degree, pt_moduli, ct_moduli, 10, bit_decomp,
+        ));
         // let params = Arc::new(BfvParameters::new(
         //     64,
         //     1153,
@@ -553,13 +551,36 @@ mod tests {
         let pt_moduli = generate_prime(60, 2 * 1048576, (1 << 60) - 1).unwrap();
         let ct_moduli = BfvParameters::generate_moduli(&[62, 62, 62, 62, 62], degree).unwrap();
         // let params = Arc::new(BfvParameters::new(degree, pt_moduli, ct_moduli, 10));
-        let params = Arc::new(BfvParameters::new(degree, pt_moduli, ct_moduli, 10));
+        let bit_decomp = BitDecomposition { base: 4, l: 8 };
+        let params = Arc::new(BfvParameters::new(
+            degree, pt_moduli, ct_moduli, 10, bit_decomp,
+        ));
 
         let sk = SecretKey::generate(&params);
 
         let mut one_poly = Poly::try_from_vec_u64(&params.rq_context, &[1u64]);
         one_poly.change_representation(Representation::Ntt);
 
+        let b_ksk = Ksk::new(&sk, &one_poly);
+    }
+
+    #[test]
+    fn trial() {
+        let mut rng = thread_rng();
+        let degree = 8;
+        // let ct_moduli = BfvParameters::generate_moduli(&[50, 55, 55], degree).unwrap();
+        // dbg!(&ct_moduli);
+        let pt_moduli = generate_prime(60, 2 * 1048576, (1 << 60) - 1).unwrap();
+        let ct_moduli = BfvParameters::generate_moduli(&[62, 62, 62], degree).unwrap();
+        let bit_decomp = BitDecomposition { base: 4, l: 8 };
+        let params = Arc::new(BfvParameters::new(
+            degree, pt_moduli, ct_moduli, 10, bit_decomp,
+        ));
+
+        let sk = SecretKey::generate(&params);
+
+        let mut one_poly = Poly::try_from_vec_u64(&params.rq_context, &[1u64]);
+        one_poly.change_representation(Representation::Ntt);
         let b_ksk = Ksk::new(&sk, &one_poly);
     }
 
@@ -572,7 +593,10 @@ mod tests {
         let pt_moduli = generate_prime(60, 2 * 1048576, (1 << 60) - 1).unwrap();
         let ct_moduli = BfvParameters::generate_moduli(&[62, 62, 62, 62, 62], degree).unwrap();
         // let params = Arc::new(BfvParameters::new(degree, pt_moduli, ct_moduli, 10));
-        let params = Arc::new(BfvParameters::new(degree, pt_moduli, ct_moduli, 10));
+        let bit_decomp = BitDecomposition { base: 4, l: 8 };
+        let params = Arc::new(BfvParameters::new(
+            degree, pt_moduli, ct_moduli, 10, bit_decomp,
+        ));
 
         let sk = SecretKey::generate(&params);
 
@@ -689,46 +713,65 @@ mod tests {
 
     #[test]
     fn test_decompose_constant() {
-        let f = 4u64;
-        f.pow(31);
-
         let mut rng = thread_rng();
         let degree = 8;
-        let pt_moduli = generate_prime(60, 2 * 1048576, (1 << 60) - 1).unwrap();
-        let ct_moduli = BfvParameters::generate_moduli(&[62, 62], degree).unwrap();
+        let pt_moduli = generate_prime(55, 2 * 1048576, (1 << 55) - 1).unwrap();
+        let ct_moduli = BfvParameters::generate_moduli(&[62], degree).unwrap();
         // let params = Arc::new(BfvParameters::new(degree, pt_moduli, ct_moduli, 10));
-        let params = Arc::new(BfvParameters::new(degree, pt_moduli, ct_moduli, 10));
+        let bit_decomp = BitDecomposition { base: 4, l: 8 };
+        let params = Arc::new(BfvParameters::new(
+            degree, pt_moduli, ct_moduli, 10, bit_decomp,
+        ));
         let sk = SecretKey::generate(&params);
 
         let constant = params.rq_context.rns.garner[0].clone();
+        dbg!(constant.bits());
 
-        let decomp_bits = 64usize;
-        let parent_bits = 128usize;
+        let decomp_bits = 30usize;
+        let parent_bits = 60usize;
 
+        let decomposed_pts = decompose_bits(&constant, parent_bits, decomp_bits);
         let decomposed_cts = decompose_constant(&constant, &sk, parent_bits, decomp_bits);
-        let base = BigUint::from_u128(1 << decomp_bits).unwrap();
-        let mut final_value = decomposed_cts[0].clone();
-        for i in (1..(parent_bits / decomp_bits)) {
-            let pow = base.pow(i as u32);
-            let value = &decomposed_cts[i] * &pow;
-            final_value = &final_value + &value;
-        }
+        let base = BigUint::one() << decomp_bits;
 
-        // let mut one_poly = Poly::try_from_vec_u64(&params.rq_context, &vec![1u64]);
-        // one_poly.change_representation(Representation::Ntt);
-        // let b_ksk = Ksk::new(&sk, &one_poly);
-        // let b0 = BfvCipherText {
-        //     params: params.clone(),
-        //     cts: vec![b_ksk.c0[0].clone(), b_ksk.c1[1].clone()],
-        // };
+        izip!(decomposed_pts.iter(), decomposed_cts.iter())
+            .enumerate()
+            .for_each(|(index, (pt, ct))| {
+                dbg!(pt);
+                dbg!(sk.decrypt(ct).values);
+                let pow = base.pow(index as u32);
+                dbg!(&pow, &pow * pt, (&pow * pt).bits(), &pow.bits());
+                let v = ct * &pow;
+                dbg!(sk.decrypt(&v).values);
+                dbg!();
+                dbg!();
+                dbg!();
+            });
 
-        let mut ideal_m = Poly::try_from_vec_u64(&sk.params.rq_context, &[1u64]);
-        ideal_m.change_representation(Representation::Ntt);
-        // let zx = BigUint::from_u64(5).unwrap();
-        ideal_m *= &constant;
+        // decomposed_cts.iter().enumerate().for_each(|(index, c)| {});
 
-        dbg!(sk.decrypt(&final_value).values);
-        dbg!(measure_noise_tmp(&params, ideal_m, &sk, &final_value));
+        // let mut final_value = decomposed_cts[0].clone();
+        // for i in (0..(parent_bits / decomp_bits)) {
+        //     let pow = base.pow(i as u32);
+        //     let value = &decomposed_cts[i] * &pow;
+        //     final_value = &final_value + &value;
+        // }
+
+        // // let mut one_poly = Poly::try_from_vec_u64(&params.rq_context, &vec![1u64]);
+        // // one_poly.change_representation(Representation::Ntt);
+        // // let b_ksk = Ksk::new(&sk, &one_poly);
+        // // let b0 = BfvCipherText {
+        // //     params: params.clone(),
+        // //     cts: vec![b_ksk.c0[0].clone(), b_ksk.c1[1].clone()],
+        // // };
+
+        // let mut ideal_m = Poly::try_from_vec_u64(&sk.params.rq_context, &[1u64]);
+        // ideal_m.change_representation(Representation::Ntt);
+        // // let zx = BigUint::from_u64(5).unwrap();
+        // ideal_m *= &constant;
+
+        // dbg!(sk.decrypt(&final_value).values);
+        // dbg!(measure_noise_tmp(&params, ideal_m, &sk, &final_value));
     }
 
     #[test]
@@ -797,7 +840,6 @@ pub fn decompose_bits(m: &BigUint, parent_bits: usize, decomp_bits: usize) -> Ve
     decomp_m
 }
 
-// FIXME: This decomposition function isn't constant time
 pub fn decompose_constant(
     m: &BigUint,
     sk: &SecretKey,
@@ -824,18 +866,24 @@ pub fn measure_noise_tmp(
 ) -> usize {
     let pt = Poly::try_from_vec_u64(&ct.params.rq_context, &[1u64]);
 
+    // TODO: REMOVE
+    let constant = sk.params.rq_context.rns.garner[0].clone();
+
+    let mut bg = Poly::try_from_bigint(&sk.params.rq_context, &[constant.clone()]);
+    bg.change_representation(Representation::Ntt);
+
     let mut sk = Poly::try_from_vec_i64(&params.rq_context, &sk.coeffs);
     sk.change_representation(Representation::Ntt);
     let mut m = &ct.cts[1] * &sk;
     m += &ct.cts[0];
 
-    m -= &ideal_m;
-    m.change_representation(Representation::PowerBasis);
+    bg -= &ideal_m;
+    bg.change_representation(Representation::PowerBasis);
 
     let mut noise = 0usize;
     let ct_moduli = &params.rq_context.rns.product.clone();
 
-    Vec::<BigUint>::from(&m).iter().for_each(|coeff| {
+    Vec::<BigUint>::from(&bg).iter().for_each(|coeff| {
         noise = std::cmp::max(
             noise,
             std::cmp::min(coeff.bits(), (ct_moduli - coeff).bits()) as usize,

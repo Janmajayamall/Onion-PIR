@@ -1,14 +1,51 @@
-use num_bigint_dig::{prime::probably_prime, BigUint, ModInverse};
-use num_traits::PrimInt;
+use num_bigint::BigUint;
+use num_bigint_dig::{prime::probably_prime, BigUint as BigUintDig, ModInverse};
+use num_traits::{FromPrimitive, One, PrimInt, ToPrimitive, Zero};
 use rand::{CryptoRng, RngCore};
-use rand_distr::{
-    num_traits::{FromPrimitive, ToPrimitive},
-    Distribution, Uniform,
-};
+use rand_distr::{Distribution, Uniform};
 use std::{
     mem::size_of,
     ops::{Not, Shr, ShrAssign},
 };
+
+pub fn bit_vector(bit_size: usize, m: u64) -> Vec<bool> {
+    let mut bit_vec = vec![false; bit_size];
+
+    let mut value = m.clone();
+    let mask = 1u64;
+    let mut index = 0;
+    while !value.is_zero() {
+        let bit = &value & &mask;
+
+        if bit.is_one() {
+            bit_vec[index] = true;
+        } else {
+            bit_vec[index] = false;
+        }
+
+        value >>= 1;
+        index += 1;
+    }
+
+    bit_vec
+}
+
+pub fn decompose_bits(m: u64, parent_bits: usize, decomp_bits: usize) -> Vec<u64> {
+    let bit_vector = bit_vector(parent_bits, m);
+
+    let decomp_m = bit_vector
+        .chunks(decomp_bits)
+        .into_iter()
+        .map(|chunk| {
+            chunk
+                .iter()
+                .rev()
+                .fold(0u64, |acc, b| acc * 2 + (*b as u64))
+        })
+        .collect();
+
+    decomp_m
+}
 
 /// Sample a vector of independent centered binomial distributions of a given
 /// variance. Returns an error if the variance is strictly larger than 16.
@@ -56,8 +93,8 @@ pub fn ilog2<T: PrimInt>(value: T) -> usize {
 
 // Returns multiplicative inverse of `v mod q`
 pub fn mod_inverse(v: u64, q: u64) -> Option<u64> {
-    let v = BigUint::from_u64(v).unwrap();
-    let q = BigUint::from_u64(q).unwrap();
+    let v = BigUintDig::from_u64(v).unwrap();
+    let q = BigUintDig::from_u64(q).unwrap();
     v.mod_inverse(q)?.to_u64()
 }
 
@@ -71,7 +108,7 @@ pub fn div_ceil<T: PrimInt>(a: T, b: T) -> T {
 
 /// Returns whether the modulus p is prime; this function is 100% accurate.
 pub fn is_prime(p: u64) -> bool {
-    probably_prime(&BigUint::from(p), 0)
+    probably_prime(&BigUintDig::from(p), 0)
 }
 
 /// Generate a `num_bits`-bit prime, congruent to 1 mod `modulo`, strictly

@@ -1,6 +1,10 @@
 use std::sync::Arc;
 
-use crate::{bfv::BfvCipherText, rq::Representation};
+use crate::{
+    bfv::{BfvCipherText, BfvPlaintext},
+    poly::Modulus,
+    rq::Representation,
+};
 use itertools::{izip, Itertools};
 use num_bigint::BigUint;
 use num_traits::FromPrimitive;
@@ -20,10 +24,40 @@ pub struct Ksk {
     pub c1: Vec<Poly>,
 
     /// Context of poly that will be key switched
-    ct_context: Arc<RqContext>,
+    pub ct_context: Arc<RqContext>,
+}
+
+enum KskType {
+    Encrypted,
+    Default,
 }
 
 impl Ksk {
+    pub fn new_with_pt(sk: &SecretKey, from: &BfvPlaintext) -> Self {
+        let params = sk.params.clone();
+
+        let ct_value = sk.encrypt(from);
+
+        let mut c0s = vec![];
+        let mut c1s = vec![];
+        params.rq_context.rns.garner.iter().for_each(|gi| {
+            let v = &ct_value * gi;
+            c0s.push(v.cts[0].clone());
+            c1s.push(v.cts[1].clone());
+        });
+        // let d_sm = params.rq_context.rns.garner.iter().map(|gi| {
+        //     let gi_s = &sk_poly * gi;
+        //     &ct_value * &gi_s
+        // });
+
+        Self {
+            params: params.clone(),
+            c0: c0s,
+            c1: c1s,
+            ct_context: params.rq_context.clone(),
+        }
+    }
+
     pub fn new(sk: &SecretKey, from: &Poly) -> Self {
         let params = sk.params.clone();
 
@@ -143,12 +177,13 @@ mod tests {
     use crate::{
         bfv::{BfvParameters, BfvPlaintext},
         rns::RnsContext,
+        rq::BitDecomposition,
     };
 
     #[test]
     fn trial() {
         let mut rng = thread_rng();
-        let degree = 64;
+        let degree = 8;
         // let ct_moduli = BfvParameters::generate_moduli(&[50, 55, 55], degree).unwrap();
         // dbg!(&ct_moduli);
         let pt_moduli: u64 = (1 << 20) + (1 << 19) + (1 << 17) + (1 << 16) + (1 << 14) + 1;
@@ -158,43 +193,59 @@ mod tests {
             pt_moduli,
             vec![1125899906840833, 36028797018963841, 36028797018963457],
             10,
+            BitDecomposition { base: 4, l: 8 },
         ));
         let sk = &SecretKey::generate(&params);
 
-        let mut one_poly = Poly::try_from_vec_u64(&params.rq_context, &[0u64]);
-        let mut sk_poly = Poly::try_from_vec_i64(&params.rq_context, &sk.coeffs);
-        one_poly.change_representation(Representation::Ntt);
-        sk_poly.change_representation(Representation::Ntt);
-        sk_poly *= &one_poly;
-        let ksk = Ksk::new(&sk, &sk_poly);
-        izip!(ksk.c0.iter(), ksk.c1.iter()).for_each(|(c0, c1)| {
-            let p = sk.decrypt(&BfvCipherText {
-                params: params.clone(),
-                cts: vec![c0.clone(), c1.clone()],
-            });
-            println!("{:?}", p.values);
-        });
+        let mut poly_g =
+            Poly::try_from_bigint(&params.rq_context, &[BigUint::from_usize(10000).unwrap()]);
+        poly_g.change_representation(Representation::Ntt);
 
-        let mut two = BfvPlaintext::new(&params, &[2u64].to_vec());
-        let mut two_poly = sk.encrypt(&two);
-        let mut c0 = two_poly.cts[0].clone();
-        let mut c1 = two_poly.cts[1].clone();
-        c1.change_representation(Representation::PowerBasis);
-        let (c0_2, c1_2) = ksk.key_switch(&c1);
-        println!(
-            "two * sk: {:?}",
-            sk.decrypt(&BfvCipherText {
-                params: params.clone(),
-                cts: vec![&c0 + &c0_2, c1_2],
-            })
-            .values
-        );
+        let mut one_enc = sk.encrypt(&BfvPlaintext::new(&params, &vec![1]));
+        let one_g_enc = &one_enc * &poly_g;
+
+        dbg!(sk.decrypt(&one_g_enc));
+    }
+
+    #[test]
+    fn ksk_with_pt() {
+        let mut rng = thread_rng();
+        let degree = 8;
+        // let ct_moduli = BfvParameters::generate_moduli(&[50, 55, 55], degree).unwrap();
+        // dbg!(&ct_moduli);
+        let pt_moduli: u64 = (1 << 20) + (1 << 19) + (1 << 17) + (1 << 16) + (1 << 14) + 1;
+        // let params = Arc::new(BfvParameters::new(degree, pt_moduli, ct_moduli, 10));
+        let params = Arc::new(BfvParameters::new(
+            degree,
+            pt_moduli,
+            vec![1125899906840833, 36028797018963841, 36028797018963457],
+            10,
+            BitDecomposition { base: 4, l: 8 },
+        ));
+        let sk = SecretKey::generate(&params);
+        let sk_poly = Poly::try_from_vec_i64(&params.rq_context, &sk.coeffs);
+
+        let pt_poly = BfvPlaintext::new(&params, &vec![1]);
+        let ksk = Ksk::new_with_pt(&sk, &pt_poly);
+
+        let mul_poly = Poly::try_from_vec_u64(&params.rq_context, &[1]);
+
+        let (c0, c1) = ksk.key_switch(&mul_poly);
+        let ct = BfvCipherText {
+            cts: vec![c0, c1],
+            params: params,
+        };
+        dbg!(sk.decrypt(&ct));
     }
 
     #[test]
     fn ksk() {
         for _ in 0..100 {
-            let params = Arc::new(BfvParameters::default(2, 8));
+            let params = Arc::new(BfvParameters::default(
+                2,
+                8,
+                BitDecomposition { base: 4, l: 8 },
+            ));
             let sk = SecretKey::generate(&params);
             let mut sk_poly = Poly::try_from_vec_i64(&params.rq_context, &sk.coeffs);
             sk_poly.change_representation(Representation::Ntt);

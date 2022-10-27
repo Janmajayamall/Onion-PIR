@@ -249,6 +249,10 @@ impl Modulus {
     pub fn modulus(&self) -> u64 {
         self.p
     }
+
+    pub fn bits(&self) -> u64 {
+        u64::MAX - self.p.leading_zeros().to_u64().unwrap()
+    }
 }
 
 // #[derive(Clone, Debug)]
