@@ -356,7 +356,16 @@ mod tests {
             .map(|(index, gi)| unpacked_query_cts[index][0].clone())
             .collect_vec();
         // upper half
-        let upper_half = lower_half.iter().map(|gi_b| gi_b * &sk_poly).collect();
+        let upper_half = lower_half
+            .iter()
+            .map(|gi_b| {
+                let (c0, c1) = RgswCt::external_product(&evaluation_key.sk_rgsw, gi_b);
+                BfvCipherText {
+                    params: params.clone(),
+                    cts: vec![c0, c1],
+                }
+            })
+            .collect();
 
         let lower_half = Ksk::try_from_decomposed_rlwes(&params, &lower_half);
         let upper_half = Ksk::try_from_decomposed_rlwes(&params, &upper_half);
