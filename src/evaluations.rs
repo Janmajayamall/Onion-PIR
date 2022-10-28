@@ -7,6 +7,7 @@ use crate::{
     utils::ilog2,
 };
 use itertools::{enumerate, izip, Itertools};
+use ndarray::Array2;
 use num_bigint::BigUint;
 use num_bigint_dig::{BigUint as BigUintDig, ModInverse};
 use num_traits::{FromPrimitive, One, ToPrimitive, Zero};
@@ -64,15 +65,30 @@ impl Client {
 struct Server {
     first_dim: usize,
     dim: usize,
-    db: Vec<Poly>,
+    db: Vec<Plaintext>,
+    db_scaled: Vec<Poly>,
 }
 
 impl Server {
-    pub fn new(first_dim: usize, dim: usize, db: &Vec<Poly>) -> Self {
+    pub fn new(
+        first_dim: usize,
+        dim: usize,
+        db: &Vec<Plaintext>,
+        params: &Arc<BfvParameters>,
+    ) -> Self {
+        let db_scaled = db
+            .iter()
+            .map(|p| {
+                let mut pt = Poly::try_from_vec_u64(&params.rq_context, &p.values);
+                pt.change_representation(Representation::Ntt);
+                pt
+            })
+            .collect();
         Self {
             first_dim,
             dim,
             db: db.clone(),
+            db_scaled,
         }
     }
 
@@ -93,66 +109,52 @@ impl Server {
     pub fn decode(
         &self,
         decomposition_base: usize,
-        query_ct: &BfvCipherText,
+        query_cts: Vec<BfvCipherText>,
         eval_key: &Evaluation,
         params: &Arc<BfvParameters>,
     ) -> Vec<BfvCipherText> {
-        let mut cts = eval_key.unpack(query_ct.clone());
+        // assert!(params.rq_context.moduli.len() + 1 == query_cts.len());
 
-        // truncate cts
-        let no_cts = self.no_of_cts(decomposition_base);
-        cts = cts[0..no_cts].to_vec();
+        let mut first_dim_cts = eval_key.unpack(query_cts[0].clone());
+        first_dim_cts = first_dim_cts.as_slice()[..self.first_dim].to_vec();
 
-        let first_dim_bfvs = &cts[..(self.first_dim as usize)];
-
-        let dimensions_queries: Vec<Vec<RgswCt>> = cts[(self.first_dim as usize)..]
-            .chunks(self.dim as usize)
-            .into_iter()
-            .enumerate()
-            .map(|(dim_index, dim_cts)| {
-                dim_cts
-                    .into_iter()
-                    .enumerate()
-                    .map(|(row_index, row_ct)| {
-                        let rgsw_lower_half = params
-                            .rq_context
-                            .rns
-                            .garner
-                            .iter()
-                            .map(|gi| row_ct * gi)
-                            .collect_vec();
-                        let rgsw_upper_half = rgsw_lower_half
-                            .iter()
-                            .map(|m_gi| {
-                                let (c0, c1) = RgswCt::external_product(&eval_key.sk_rgsw, &m_gi);
-                                BfvCipherText {
-                                    params: params.clone(),
-                                    cts: vec![c0, c1],
-                                }
-                            })
-                            .collect();
-
-                        let rgsw_lower_half_ksk =
-                            Ksk::try_from_decomposed_rlwes(&params, &rgsw_lower_half);
-                        let rgsw_upper_half_ksk =
-                            Ksk::try_from_decomposed_rlwes(&params, &rgsw_upper_half);
-
-                        RgswCt::try_from_ksks(&rgsw_upper_half_ksk, &rgsw_lower_half_ksk)
-                    })
-                    .collect()
-            })
-            .collect();
+        // let rgsws_count = 0usize;
+        // let mut rgsws = vec![];
+        // let mut vals = vec![];
+        // for i in 1..query_cts.len() {
+        //     let cts = eval_key.unpack(query_cts[i].clone()).as_slice()[..rgsws_count].to_vec();
+        //     vals.push(cts);
+        // }
+        // for i in 0..rgsws_count {
+        //     let mut lower_half = vec![];
+        //     for j in 0..vals.len() {
+        //         lower_half.push(vals[j][i].clone());
+        //     }
+        //     let upper_half = lower_half
+        //         .iter()
+        //         .map(|ct| {
+        //             let (c0, c1) = RgswCt::external_product(&eval_key.sk_rgsw, ct);
+        //             BfvCipherText {
+        //                 params: params.clone(),
+        //                 cts: vec![c0, c1],
+        //             }
+        //         })
+        //         .collect();
+        //     let ksk1 = Ksk::try_from_decomposed_rlwes(params, &lower_half);
+        //     let ksk0 = Ksk::try_from_decomposed_rlwes(params, &upper_half);
+        //     rgsws.push(RgswCt::try_from_ksks(&ksk0, &ksk1));
+        // }
 
         // dbg!(dimensions_queries.len());
         // dbg!(dimensions_queries[0].len());
 
         // First dimension
         let mut db: Vec<BfvCipherText> = self
-            .db
+            .db_scaled
             .chunks(self.first_dim)
             .into_iter()
-            .map(|pts| {
-                let rows = izip!(first_dim_bfvs.iter(), pts.iter()).map(|(q, p)| q * p);
+            .map(|pt_polys| {
+                let rows = izip!(first_dim_cts.iter(), pt_polys.iter()).map(|(q, p)| q * p);
 
                 let mut sum = BfvCipherText {
                     params: params.clone(),
@@ -174,38 +176,38 @@ impl Server {
         // dbg!(sk.decrypt(&db[1].clone()).values);
 
         // Rest of dimensions
-        dimensions_queries
-            .iter()
-            .enumerate()
-            .for_each(|(dim_index, query_rgsws)| {
-                let tmp = db
-                    .chunks(self.dim)
-                    .into_iter()
-                    .enumerate()
-                    .map(|(row_index, cts)| {
-                        let rows = izip!(query_rgsws.iter(), cts.iter()).map(|(rgsw, bfv)| {
-                            let (c0, c1) = RgswCt::external_product(rgsw, bfv);
-                            BfvCipherText {
-                                params: params.clone(),
-                                cts: vec![c0, c1],
-                            }
-                        });
-                        let mut sum = BfvCipherText {
-                            params: cts[0].params.clone(),
-                            cts: vec![],
-                        };
-                        rows.enumerate().for_each(|(index, product)| {
-                            if index == 0 {
-                                sum = product;
-                            } else {
-                                sum = &sum + &product
-                            }
-                        });
-                        sum
-                    })
-                    .collect();
-                db = tmp;
-            });
+        // dimensions_queries
+        //     .iter()
+        //     .enumerate()
+        //     .for_each(|(dim_index, query_rgsws)| {
+        //         let tmp = db
+        //             .chunks(self.dim)
+        //             .into_iter()
+        //             .enumerate()
+        //             .map(|(row_index, cts)| {
+        //                 let rows = izip!(query_rgsws.iter(), cts.iter()).map(|(rgsw, bfv)| {
+        //                     let (c0, c1) = RgswCt::external_product(rgsw, bfv);
+        //                     BfvCipherText {
+        //                         params: params.clone(),
+        //                         cts: vec![c0, c1],
+        //                     }
+        //                 });
+        //                 let mut sum = BfvCipherText {
+        //                     params: cts[0].params.clone(),
+        //                     cts: vec![],
+        //                 };
+        //                 rows.enumerate().for_each(|(index, product)| {
+        //                     if index == 0 {
+        //                         sum = product;
+        //                     } else {
+        //                         sum = &sum + &product
+        //                     }
+        //                 });
+        //                 sum
+        //             })
+        //             .collect();
+        //         db = tmp;
+        //     });
 
         db
     }
@@ -416,12 +418,9 @@ mod tests {
         ));
 
         // Pre-processing
-        let db: Vec<Poly> = (0..4)
+        let db: Vec<Plaintext> = (0..4)
             .into_iter()
-            .map(|i| {
-                let v = [i, i, i, i];
-                Poly::try_from_vec_u64(&params.rq_context, &v)
-            })
+            .map(|i| Plaintext::new(&params, &vec![i, i, i, i]))
             .collect();
 
         // Client side
@@ -429,17 +428,19 @@ mod tests {
         let query = vec![3usize];
         let client = Client::new(4, 2);
         let query_encoded = client.encode(query, db.len(), &params, &sk);
+        dbg!(&query_encoded);
         // let mut query_poly = Poly::try_from_vec_u64(&params.rq_context, &query_encoded);
         let query_pt = Plaintext::new(&params, &query_encoded);
         // query_poly.change_representation(Representation::Ntt);
         let query_ct = sk.encrypt(&query_pt);
+        // let query_ct = sk.encrypt_poly(&query_poly);
         let eval_key = Evaluation::build(&sk, &params);
 
         // Server side
-        let server = Server::new(4, 2, &db);
+        let server = Server::new(4, 2, &db, &params);
         let res_ct = server.decode(
             params.rq_context.rns.moduli.len(),
-            &query_ct,
+            vec![query_ct],
             &eval_key,
             &params,
         );
@@ -447,18 +448,18 @@ mod tests {
         // Client
         dbg!(res_ct.len());
         let res_ct = res_ct[0].clone();
-        let res_poly = sk.decrypt_trial(&res_ct.cts[0], &res_ct.cts[1]);
+        // let res_poly = sk.decrypt_trial(&res_ct.cts[0], &res_ct.cts[1]);
 
-        let mut ideal_poly = Poly::try_from_vec_u64(&params.rq_context, &[1]);
-        let mut selected_row = Poly::try_from_vec_u64(&params.rq_context, &[5, 5, 5, 5]);
-        ideal_poly.change_representation(Representation::Ntt);
-        selected_row.change_representation(Representation::Ntt);
-        ideal_poly *= &selected_row;
-        let mut diff = &res_poly - &ideal_poly;
-        let modulus = params.rq_context.rns.product.clone();
-        Vec::<BigUint>::from(&diff).iter().for_each(|coeff| {
-            dbg!(std::cmp::min(coeff.bits(), modulus.bits() - coeff.bits()));
-        });
+        // let mut ideal_poly = Poly::try_from_vec_u64(&params.rq_context, &[1]);
+        // let mut selected_row = Poly::try_from_vec_u64(&params.rq_context, &[5, 5, 5, 5]);
+        // ideal_poly.change_representation(Representation::Ntt);
+        // selected_row.change_representation(Representation::Ntt);
+        // ideal_poly *= &selected_row;
+        // let mut diff = &res_poly - &ideal_poly;
+        // let modulus = params.rq_context.rns.product.clone();
+        // Vec::<BigUint>::from(&diff).iter().for_each(|coeff| {
+        //     dbg!(std::cmp::min(coeff.bits(), modulus.bits() - coeff.bits()));
+        // });
 
         dbg!(sk.decrypt(&res_ct).values);
     }
