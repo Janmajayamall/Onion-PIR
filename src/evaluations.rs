@@ -64,18 +64,15 @@ impl Client {
 struct Server {
     first_dim: usize,
     dim: usize,
-    db: Vec<Plaintext>,
-    scaled_db: Vec<Poly>,
+    db: Vec<Poly>,
 }
 
 impl Server {
-    pub fn new(first_dim: usize, dim: usize, db: &Vec<Plaintext>) -> Self {
-        let scaled_db = db.iter().map(|row| row.to_poly()).collect();
+    pub fn new(first_dim: usize, dim: usize, db: &Vec<Poly>) -> Self {
         Self {
             first_dim,
             dim,
             db: db.clone(),
-            scaled_db,
         }
     }
 
@@ -318,11 +315,91 @@ mod tests {
     use rand_distr::Uniform;
 
     #[test]
+    fn pack_and_construct_rgsw() {
+        let mut rng = thread_rng();
+        let degree = 64;
+        let pt_moduli: u64 = (1 << 20) + (1 << 19) + (1 << 17) + (1 << 16) + (1 << 14) + 1;
+        let ct_moduli = BfvParameters::generate_moduli(&[62, 62, 62, 62], degree).unwrap();
+        let bit_decomp = BitDecomposition { base: 4, l: 8 };
+        let params = Arc::new(BfvParameters::new(
+            degree, pt_moduli, ct_moduli, 10, bit_decomp,
+        ));
+        let sk = SecretKey::generate(&params);
+        let mut sk_poly = Poly::try_from_vec_i64(&params.rq_context, &sk.coeffs);
+        sk_poly.change_representation(Representation::Ntt);
+
+        let query = vec![1u64, 0, 1, 0];
+        let mut query_poly = Poly::try_from_vec_u64(&params.rq_context, &query);
+        query_poly.change_representation(Representation::Ntt);
+        let decomp_query_polys = params
+            .rq_context
+            .rns
+            .garner
+            .iter()
+            .map(|gi| &query_poly * gi);
+
+        let evaluation_key = Evaluation::build(&sk, &params);
+
+        let decomp_query_cts = decomp_query_polys.map(|qp| sk.encrypt_poly(&qp));
+
+        let unpacked_query_cts = decomp_query_cts
+            .map(|ct| evaluation_key.unpack(ct))
+            .collect_vec();
+
+        // lower half
+        let lower_half = params
+            .rq_context
+            .rns
+            .garner
+            .iter()
+            .enumerate()
+            .map(|(index, gi)| unpacked_query_cts[index][0].clone())
+            .collect_vec();
+        // upper half
+        let upper_half = lower_half.iter().map(|gi_b| gi_b * &sk_poly).collect();
+
+        let lower_half = Ksk::try_from_decomposed_rlwes(&params, &lower_half);
+        let upper_half = Ksk::try_from_decomposed_rlwes(&params, &upper_half);
+
+        let rgsw = RgswCt::try_from_ksks(&upper_half, &lower_half);
+
+        let mut p_1 = Poly::try_from_vec_u64(&params.rq_context, &[1]);
+        p_1.change_representation(Representation::Ntt);
+        let rgsw_ideal = RgswCt::encrypt_poly(&sk, &p_1);
+
+        let ct1 = sk.encrypt(&Plaintext::new(
+            &params,
+            &params.plaintext_modulus.random_vec(degree, &mut rng),
+        ));
+
+        let product = RgswCt::external_product(&rgsw, &ct1);
+        let product_ideal = RgswCt::external_product(&rgsw_ideal, &ct1);
+
+        assert_eq!(
+            sk.decrypt(&BfvCipherText {
+                params: params.clone(),
+                cts: vec![product.0.clone(), product.1.clone()],
+            })
+            .values,
+            sk.decrypt(&BfvCipherText {
+                params: params.clone(),
+                cts: vec![product_ideal.0.clone(), product_ideal.1.clone()],
+            })
+            .values
+        );
+
+        // dbg!(sk.measure_noise(&BfvCipherText {
+        //     params: params.clone(),
+        //     cts: vec![product.0.clone(), product.1.clone()],
+        // }));
+    }
+
+    #[test]
     fn query() {
         let mut rng = thread_rng();
         let degree = 64;
         let pt_moduli = generate_prime(50, 2 * 1048576, (1 << 50) - 1).unwrap();
-        let ct_moduli = BfvParameters::generate_moduli(&[62, 62, 62, 62, 62], degree).unwrap();
+        let ct_moduli = BfvParameters::generate_moduli(&[62, 62, 62], degree).unwrap();
         // let params = Arc::new(BfvParameters::new(degree, pt_moduli, ct_moduli, 10));
         let bit_decomp = BitDecomposition { base: 4, l: 8 };
         let params = Arc::new(BfvParameters::new(
@@ -330,17 +407,17 @@ mod tests {
         ));
 
         // Pre-processing
-        let db: Vec<Plaintext> = (0..8)
+        let db: Vec<Poly> = (0..4)
             .into_iter()
             .map(|i| {
                 let v = [i, i, i, i];
-                Plaintext::new(&params, &v.to_vec())
+                Poly::try_from_vec_u64(&params.rq_context, &v)
             })
             .collect();
 
         // Client side
         let sk = &SecretKey::generate(&params);
-        let query = vec![3usize, 0];
+        let query = vec![3usize];
         let client = Client::new(4, 2);
         let query_encoded = client.encode(query, db.len(), &params, &sk);
         // let mut query_poly = Poly::try_from_vec_u64(&params.rq_context, &query_encoded);
@@ -411,6 +488,54 @@ mod tests {
     }
 
     #[test]
+    fn unpack_decomp() {
+        let mut rng = thread_rng();
+        let degree = 8;
+        let ct_moduli = BfvParameters::generate_moduli(&[62, 62, 62, 62], degree).unwrap();
+        let pt_moduli: u64 = (1 << 20) + (1 << 19) + (1 << 17) + (1 << 16) + (1 << 14) + 1;
+        let bit_decomp = BitDecomposition { base: 4, l: 8 };
+        let params = Arc::new(BfvParameters::new(
+            degree, pt_moduli, ct_moduli, 10, bit_decomp,
+        ));
+
+        let sk = SecretKey::generate(&params);
+
+        let evaluation = Evaluation::build(&sk, &params);
+
+        let binary_dist: Uniform<u64> = Uniform::from(0..100000000);
+        let values = rng
+            .clone()
+            .sample_iter(binary_dist)
+            .take(degree)
+            .collect_vec();
+        let values0 = rng.sample_iter(binary_dist).take(degree).collect_vec();
+        let g0 = BigUint::from(5usize);
+        let mut p1 = Poly::try_from_vec_u64(&params.rq_context, &values);
+        p1.change_representation(Representation::Ntt);
+        p1 *= &g0;
+
+        let ct = sk.encrypt_poly(&p1);
+
+        let unpacked_cts = evaluation.unpack(ct);
+        izip!(unpacked_cts.iter(), values0.iter()).for_each(|(ct, v)| {
+            let mut ex_p = Poly::try_from_vec_u64(&params.rq_context, &[*v]);
+            ex_p.change_representation(Representation::Ntt);
+            ex_p *= &g0;
+
+            let p = sk.decrypt_trial(&ct.cts[0], &ct.cts[1]);
+
+            let mut diff = &p - &ex_p;
+            diff.change_representation(Representation::Ntt);
+
+            let modulus = params.rq_context.rns.product.clone();
+
+            Vec::<BigUint>::from(&diff).iter().for_each(|coeff| {
+                dbg!(std::cmp::min(coeff.bits(), modulus.bits() - coeff.bits()));
+            });
+        });
+    }
+
+    #[test]
     fn unpack() {
         let mut rng = thread_rng();
         let degree = 64;
@@ -474,10 +599,10 @@ mod tests {
         //         // let modulus = params.rq_context.rns.product.clone();
 
         //         // dbg!(values[index], values[values.len() - (index + 1)]);
-        //         // Vec::<BigUint>::from(&diff).iter().for_each(|coeff| {
-        //         //     dbg!(std::cmp::min(coeff.bits(), modulus.bits() - coeff.bits()));
-        //         // });
-        //     });
+        //     // Vec::<BigUint>::from(&diff).iter().for_each(|coeff| {
+        //     //     dbg!(std::cmp::min(coeff.bits(), modulus.bits() - coeff.bits()));
+        //     // });
+        // });
 
         let mut r_values = vec![];
         unpacked_cts.iter().for_each(|c| {
