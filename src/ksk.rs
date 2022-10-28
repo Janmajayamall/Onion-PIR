@@ -34,9 +34,9 @@ enum KskType {
 
 impl Ksk {
     pub fn new_with_pt(sk: &SecretKey, from: &Plaintext) -> Self {
-        let mut from = Poly::try_from_vec_u64(&sk.params.rq_context, &from.values);
-        from.change_representation(Representation::Ntt);
-        Self::new(sk, &from)
+        // let mut from = Poly::try_from_vec_u64(&sk.params.rq_context, &from.values);
+        // from.change_representation(Representation::Ntt);
+        Self::new(sk, &from.to_poly())
     }
 
     pub fn new(sk: &SecretKey, from: &Poly) -> Self {
@@ -192,22 +192,20 @@ mod tests {
     fn ksk_with_pt() {
         let mut rng = thread_rng();
         let degree = 8;
-        // let ct_moduli = BfvParameters::generate_moduli(&[50, 55, 55], degree).unwrap();
-        // dbg!(&ct_moduli);
+        let ct_moduli = BfvParameters::generate_moduli(&[50, 55, 55], degree).unwrap();
         let pt_moduli: u64 = (1 << 20) + (1 << 19) + (1 << 17) + (1 << 16) + (1 << 14) + 1;
-        // let params = Arc::new(BfvParameters::new(degree, pt_moduli, ct_moduli, 10));
         let params = Arc::new(BfvParameters::new(
             degree,
             pt_moduli,
-            vec![1125899906840833, 36028797018963841, 36028797018963457],
+            ct_moduli,
             10,
             BitDecomposition { base: 4, l: 8 },
         ));
         let sk = SecretKey::generate(&params);
         let sk_poly = Poly::try_from_vec_i64(&params.rq_context, &sk.coeffs);
 
-        let pt_poly = Plaintext::new(&params, &vec![5]);
-        let ksk = Ksk::new_with_pt(&sk, &pt_poly);
+        let pt = Plaintext::new(&params, &vec![5]);
+        let ksk = Ksk::new_with_pt(&sk, &pt);
 
         let mul_poly = Poly::try_from_vec_u64(&params.rq_context, &[34]);
 

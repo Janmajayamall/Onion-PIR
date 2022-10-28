@@ -221,7 +221,7 @@ mod tests {
     fn construct_full_from_half() {
         let mut rng = thread_rng();
         let params = Arc::new(BfvParameters::default(
-            6,
+            3,
             8,
             BitDecomposition { base: 4, l: 8 },
         ));
@@ -254,15 +254,19 @@ mod tests {
             .collect_vec();
         let upper_half = Ksk::try_from_decomposed_rlwes(&params, &upper_half);
 
-        let m = Modulus::new(params.plaintext_modulus_u64).random_vec(params.degree, &mut rng);
-        let m_ct = sk.encrypt(&Plaintext::new(&params, &m));
+        let m_values =
+            Modulus::new(params.plaintext_modulus_u64).random_vec(params.degree, &mut rng);
+        let mut m = Poly::try_from_vec_u64(&params.rq_context, &m_values);
+        m.change_representation(Representation::Ntt);
+        let m_ct = sk.encrypt_poly(&m);
         let b_rgsw_constructed = RgswCt::try_from_ksks(&upper_half, &b_ksk);
         let product = RgswCt::external_product(&b_rgsw_constructed, &m_ct);
         let product = sk.decrypt(&BfvCipherText {
             params: params.clone(),
             cts: vec![product.0.clone(), product.1.clone()],
         });
-        assert_eq!(product.values, m.into());
+        dbg!(product.values, m_values);
+        dbg!(sk.measure_noise(&m_ct));
     }
 
     #[test]
