@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use crate::{
-    bfv::{BfvCipherText, BfvPlaintext},
+    bfv::{BfvCipherText, Plaintext},
     poly::Modulus,
     rq::Representation,
 };
@@ -33,29 +33,10 @@ enum KskType {
 }
 
 impl Ksk {
-    pub fn new_with_pt(sk: &SecretKey, from: &BfvPlaintext) -> Self {
-        let params = sk.params.clone();
-
-        let ct_value = sk.encrypt(from);
-
-        let mut c0s = vec![];
-        let mut c1s = vec![];
-        params.rq_context.rns.garner.iter().for_each(|gi| {
-            let v = &ct_value * gi;
-            c0s.push(v.cts[0].clone());
-            c1s.push(v.cts[1].clone());
-        });
-        // let d_sm = params.rq_context.rns.garner.iter().map(|gi| {
-        //     let gi_s = &sk_poly * gi;
-        //     &ct_value * &gi_s
-        // });
-
-        Self {
-            params: params.clone(),
-            c0: c0s,
-            c1: c1s,
-            ct_context: params.rq_context.clone(),
-        }
+    pub fn new_with_pt(sk: &SecretKey, from: &Plaintext) -> Self {
+        let mut from = Poly::try_from_vec_u64(&sk.params.rq_context, &from.values);
+        from.change_representation(Representation::Ntt);
+        Self::new(sk, &from)
     }
 
     pub fn new(sk: &SecretKey, from: &Poly) -> Self {
@@ -175,7 +156,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        bfv::{BfvParameters, BfvPlaintext},
+        bfv::{BfvParameters, Plaintext},
         rns::RnsContext,
         rq::BitDecomposition,
     };
@@ -201,7 +182,7 @@ mod tests {
             Poly::try_from_bigint(&params.rq_context, &[BigUint::from_usize(10000).unwrap()]);
         poly_g.change_representation(Representation::Ntt);
 
-        let mut one_enc = sk.encrypt(&BfvPlaintext::new(&params, &vec![1]));
+        let mut one_enc = sk.encrypt(&Plaintext::new(&params, &vec![1]));
         let one_g_enc = &one_enc * &poly_g;
 
         dbg!(sk.decrypt(&one_g_enc));
@@ -225,10 +206,10 @@ mod tests {
         let sk = SecretKey::generate(&params);
         let sk_poly = Poly::try_from_vec_i64(&params.rq_context, &sk.coeffs);
 
-        let pt_poly = BfvPlaintext::new(&params, &vec![1]);
+        let pt_poly = Plaintext::new(&params, &vec![5]);
         let ksk = Ksk::new_with_pt(&sk, &pt_poly);
 
-        let mul_poly = Poly::try_from_vec_u64(&params.rq_context, &[1]);
+        let mul_poly = Poly::try_from_vec_u64(&params.rq_context, &[34]);
 
         let (c0, c1) = ksk.key_switch(&mul_poly);
         let ct = BfvCipherText {

@@ -162,7 +162,9 @@ impl SecretKey {
     pub fn generate(params: &Arc<BfvParameters>) -> Self {
         let mut rng = thread_rng();
         let coeffs = sample_vec_cbd(params.degree, params.variance, &mut rng).into_boxed_slice();
-        // let coeffs = (0..(params.degree)).into_iter().map(|_| 2i64).collect();
+        // let coeffs = (0..(params.degree)).into_iter().map(|_| 1i64).collect();
+        // let mut coeffs: Box<[i64]> = (0..(params.degree)).into_iter().map(|_| 0i64).collect();
+        // coeffs[0] = 1;
 
         Self {
             params: params.clone(),
@@ -208,12 +210,22 @@ impl SecretKey {
         }
     }
 
-    pub fn encrypt(&self, pt: &BfvPlaintext) -> BfvCipherText {
+    pub fn encrypt(&self, pt: &Plaintext) -> BfvCipherText {
         let poly = pt.to_poly();
         self.encrypt_poly(&poly)
     }
 
-    pub fn decrypt(&self, ct: &BfvCipherText) -> BfvPlaintext {
+    pub fn decrypt_trial(&self, ct0: &Poly, ct1: &Poly) -> Poly {
+        let mut sk = Poly::try_from_vec_i64(&self.params.rq_context, &self.coeffs);
+        sk.change_representation(Representation::Ntt);
+
+        let mut v = &sk * ct1;
+        v += ct0;
+
+        v
+    }
+
+    pub fn decrypt(&self, ct: &BfvCipherText) -> Plaintext {
         let mut sk = Poly::try_from_vec_i64(&ct.cts[0].context, &self.coeffs);
         sk.change_representation(Representation::Ntt);
 
@@ -242,7 +254,7 @@ impl SecretKey {
         m = q.reduce_vec_u64(&m);
         m = self.params.plaintext_modulus.reduce_vec_u64(&m);
 
-        BfvPlaintext {
+        Plaintext {
             params: self.params.clone(),
             values: m.into_boxed_slice(),
         }
@@ -301,6 +313,21 @@ impl Add<&BfvCipherText> for &BfvCipherText {
     }
 }
 
+impl Add<&Poly> for &BfvCipherText {
+    type Output = BfvCipherText;
+    fn add(self, rhs: &Poly) -> Self::Output {
+        assert!(self.params.rq_context == rhs.context);
+
+        let c0 = &self.cts[0] + rhs;
+        let c1 = &self.cts[1] + rhs;
+
+        BfvCipherText {
+            params: self.params.clone(),
+            cts: vec![c0, c1],
+        }
+    }
+}
+
 impl Sub<&BfvCipherText> for &BfvCipherText {
     type Output = BfvCipherText;
     fn sub(self, rhs: &BfvCipherText) -> Self::Output {
@@ -316,9 +343,9 @@ impl Sub<&BfvCipherText> for &BfvCipherText {
     }
 }
 
-impl Mul<&BfvPlaintext> for &BfvCipherText {
+impl Mul<&Plaintext> for &BfvCipherText {
     type Output = BfvCipherText;
-    fn mul(self, rhs: &BfvPlaintext) -> Self::Output {
+    fn mul(self, rhs: &Plaintext) -> Self::Output {
         assert!(rhs.params == self.params);
 
         // TODO: store this in BfvPlaintext
@@ -365,12 +392,12 @@ impl Mul<&BigUint> for &BfvCipherText {
 }
 
 #[derive(Debug, Clone)]
-pub struct BfvPlaintext {
+pub struct Plaintext {
     pub params: Arc<BfvParameters>,
     pub values: Box<[u64]>,
 }
 
-impl BfvPlaintext {
+impl Plaintext {
     pub fn new(params: &Arc<BfvParameters>, values: &Vec<u64>) -> Self {
         assert!(values.len() <= params.degree);
         Self {
@@ -457,7 +484,7 @@ mod tests {
 
         for _ in 0..100 {
             let sk = SecretKey::generate(&params);
-            let pt = BfvPlaintext {
+            let pt = Plaintext {
                 params: params.clone(),
                 values: params
                     .plaintext_modulus
@@ -486,7 +513,7 @@ mod tests {
             let gk = GaliosKey::new(&sk, &subs);
 
             let v = params.plaintext_modulus.random_vec(params.degree, &mut rng);
-            let pt = BfvPlaintext::new(&params, &v);
+            let pt = Plaintext::new(&params, &v);
             let ct = sk.encrypt(&pt);
 
             let ct2 = gk.relinearize(&ct);

@@ -1,5 +1,5 @@
 use crate::{
-    bfv::{BfvCipherText, BfvParameters, BfvPlaintext, GaliosKey, SecretKey},
+    bfv::{BfvCipherText, BfvParameters, GaliosKey, Plaintext, SecretKey},
     ksk::Ksk,
     poly::Modulus,
     rgsw::RgswCt,
@@ -46,39 +46,17 @@ impl Client {
 
         assert!(((db_rows / self.first_dim) / self.dim.pow((query_dims.len() - 1) as u32)) == 1);
 
-        let mut one_poly = Poly::try_from_vec_u64(&bfv_params.rq_context, &[1u64]);
-        one_poly.change_representation(Representation::Ntt);
-        let b_ksk = Ksk::new(&sk, &one_poly);
-        let decomposed_vals = izip!(b_ksk.c0.iter(), b_ksk.c1.iter())
-            .map(|(c0, c1)| {
-                sk.decrypt(&BfvCipherText {
-                    params: bfv_params.clone(),
-                    cts: vec![c0.clone(), c1.clone()],
-                })
-                .values[0]
-            })
-            .collect_vec();
-
         // final length of `rgsws` = garner.len() * self.dim * (query_dims - 1)
         let mut rgsws: Vec<u64> = vec![];
         for i in 1..query_dims.len() {
             assert!(query_dims[i] < self.dim);
             for j in 0..self.dim {
-                if j == query_dims[i] {
-                    // izip!(bfv_params.rq_context.rns.garner.iter()).for_each(|g| {
-                    //     dbg!(bfv_params.plaintext_modulus.reduce_biguint(g), g);
-                    //     rgsws.push(bfv_params.plaintext_modulus.reduce_biguint(g));
-                    // });
-                    rgsws.extend(&decomposed_vals);
-                } else {
-                    (0..(bfv_params.rq_context.rns.garner.len()))
-                        .into_iter()
-                        .for_each(|_| rgsws.push(0u64));
-                }
+                rgsws.push((j == query_dims[i]) as u64)
             }
         }
 
         first_dim_bfv.extend(rgsws.iter());
+        // dbg!(&first_dim_bfv);
         first_dim_bfv
     }
 }
@@ -86,11 +64,11 @@ impl Client {
 struct Server {
     first_dim: usize,
     dim: usize,
-    db: Vec<BfvPlaintext>,
+    db: Vec<Plaintext>,
 }
 
 impl Server {
-    pub fn new(first_dim: usize, dim: usize, db: &Vec<BfvPlaintext>) -> Self {
+    pub fn new(first_dim: usize, dim: usize, db: &Vec<Plaintext>) -> Self {
         Self {
             first_dim,
             dim,
@@ -107,7 +85,7 @@ impl Server {
 
         while len > 1 {
             len /= self.dim as usize;
-            count += (self.dim as usize * decomposition_base)
+            count += self.dim as usize;
         }
         count
     }
@@ -121,6 +99,7 @@ impl Server {
         sk: &SecretKey,
     ) -> Vec<BfvCipherText> {
         let mut cts = eval_key.unpack(query_ct.clone());
+        let params = sk.params.clone();
 
         // truncate cts
         let no_cts = self.no_of_cts(decomposition_base);
@@ -133,90 +112,41 @@ impl Server {
         let first_dim_bfvs = &cts[..(self.first_dim as usize)];
 
         let dimensions_queries: Vec<Vec<RgswCt>> = cts[(self.first_dim as usize)..]
-            .chunks(self.dim as usize * decomposition_base)
+            .chunks(self.dim as usize)
             .into_iter()
             .enumerate()
             .map(|(dim_index, dim_cts)| {
                 dim_cts
-                    .chunks(decomposition_base)
                     .into_iter()
                     .enumerate()
-                    .map(|(row_index, row_ksk_cts)| {
-                        // FIXME: Remove this
-                        let mut one_poly =
-                            Poly::try_from_vec_u64(&row_ksk_cts[0].params.rq_context, &[1u64]);
-                        one_poly.change_representation(Representation::Ntt);
-                        let base = Ksk::new(sk, &one_poly);
+                    .map(|(row_index, row_ct)| {
+                        dbg!(row_index);
+                        println!("{:?}", sk.measure_noise(&row_ct));
 
-                        // izip!(g.ksk0.c0.iter(), g.ksk0.c1.iter()).for_each(|(c0, c1)| {
-                        //     let p = sk.decrypt(&BfvCipherText {
-                        //         params: sk.params.clone(),
-                        //         cts: vec![c0.clone(), c1.clone()],
-                        //     });
-                        //     println!("skb_i: {:?}", p.values);
-                        // });
-
-                        let tmp = izip!(base.c0.iter(), base.c1.iter())
-                            .map(|(c0, c1)| BfvCipherText {
-                                params: sk.params.clone(),
-                                cts: vec![c0.clone(), c1.clone()],
-                            })
-                            .collect_vec();
-
-                        if row_index == 0 {
-                            izip!(
-                                tmp.iter(),
-                                row_ksk_cts.iter(),
-                                sk.params.rq_context.rns.garner.iter()
-                            )
-                            .for_each(|(ex, re, gi)| {
-                                let mut p = Poly::try_from_vec_u64(&sk.params.rq_context, &[1u64]);
-                                p.change_representation(Representation::Ntt);
-                                dbg!(&p.representation);
-                                p *= gi;
-                                println!(
-                                    "ex: {:?}, re: {:?}",
-                                    measure_noise_tmp(&sk.params, p.clone(), sk, ex),
-                                    measure_noise_tmp(&sk.params, p, sk, re)
-                                )
-                            });
-                        }
-
-                        let s_row_ksk_cts = row_ksk_cts
+                        let rgsw_lower_half = params
+                            .rq_context
+                            .rns
+                            .garner
                             .iter()
-                            .enumerate()
-                            .map(|(g_index, a)| {
-                                // a is `a * g_i`
-                                let (c0, c1) =
-                                    RgswCt::external_product(&eval_key.sk_rgsw, &a.clone());
-
-                                // sk * a * g_i
-                                let f = BfvCipherText {
-                                    params: a.params.clone(),
+                            .map(|gi| row_ct * gi)
+                            .collect_vec();
+                        let rgsw_upper_half = rgsw_lower_half
+                            .iter()
+                            .map(|m_gi| {
+                                let (c0, c1) = RgswCt::external_product(&eval_key.sk_rgsw, &m_gi);
+                                BfvCipherText {
+                                    params: params.clone(),
                                     cts: vec![c0, c1],
-                                };
-
-                                // println!(
-                                //     "dim: {}, row: {}, g_i: {}, fi: {:?}, ai: {:?}",
-                                //     dim_index,
-                                //     row_index,
-                                //     g_index,
-                                //     sk.decrypt(&f).values,
-                                //     sk.decrypt(&a).values
-                                // );
-
-                                f
+                                }
                             })
                             .collect();
 
-                        let s_row_ksk =
-                            Ksk::try_from_decomposed_rlwes(&row_ksk_cts[0].params, &s_row_ksk_cts);
-                        let row_ksk = Ksk::try_from_decomposed_rlwes(
-                            &row_ksk_cts[0].params,
-                            &row_ksk_cts.to_vec(),
-                        );
+                        let rgsw_lower_half_ksk =
+                            Ksk::try_from_decomposed_rlwes(&params, &rgsw_lower_half);
+                        let rgsw_upper_half_ksk =
+                            Ksk::try_from_decomposed_rlwes(&params, &rgsw_upper_half);
 
-                        RgswCt::try_from_ksks(&s_row_ksk, &row_ksk)
+                        RgswCt::try_from_ksks(&rgsw_upper_half_ksk, &rgsw_lower_half_ksk)
                     })
                     .collect()
             })
@@ -389,7 +319,7 @@ impl Evaluation {
 mod tests {
     use super::*;
     use crate::{
-        bfv::{BfvParameters, BfvPlaintext},
+        bfv::{BfvParameters, Plaintext},
         ksk,
         rns::RnsContext,
         rq::{BitDecomposition, Representation},
@@ -404,7 +334,7 @@ mod tests {
     fn query() {
         let mut rng = thread_rng();
         let degree = 64;
-        let pt_moduli = generate_prime(60, 2 * 1048576, (1 << 60) - 1).unwrap();
+        let pt_moduli = generate_prime(50, 2 * 1048576, (1 << 50) - 1).unwrap();
         let ct_moduli = BfvParameters::generate_moduli(&[62, 62, 62, 62, 62], degree).unwrap();
         // let params = Arc::new(BfvParameters::new(degree, pt_moduli, ct_moduli, 10));
         let bit_decomp = BitDecomposition { base: 4, l: 8 };
@@ -415,11 +345,11 @@ mod tests {
         let degree = 64;
 
         // Pre-processing
-        let db: Vec<BfvPlaintext> = (0..8)
+        let db: Vec<Plaintext> = (0..8)
             .into_iter()
             .map(|i| {
                 let v = [i, i, i, i];
-                BfvPlaintext::new(&params, &v.to_vec())
+                Plaintext::new(&params, &v.to_vec())
             })
             .collect();
 
@@ -428,7 +358,7 @@ mod tests {
         let query = vec![3usize, 0];
         let client = Client::new(4, 2);
         let query_pt = client.encode(query, db.len(), &params, &sk);
-        let query_pt = BfvPlaintext::new(&params, &query_pt);
+        let query_pt = Plaintext::new(&params, &query_pt);
         let query_ct = sk.encrypt(&query_pt);
         let eval_key = Evaluation::build(&sk, &params);
 
@@ -468,7 +398,7 @@ mod tests {
         let sk = SecretKey::generate(&params);
         let evaluation = Evaluation::build(&sk, &params);
 
-        let pt = BfvPlaintext::new(&params, &query);
+        let pt = Plaintext::new(&params, &query);
         let ct = sk.encrypt(&pt);
 
         let cts = evaluation.unpack(ct);
@@ -512,7 +442,7 @@ mod tests {
 
         let binary_dist = Uniform::from(0..2);
         let values = rng.sample_iter(binary_dist).take(60).collect();
-        let pt = BfvPlaintext::new(&params, &values);
+        let pt = Plaintext::new(&params, &values);
 
         let ct = sk.encrypt(&pt);
         let d_values = sk.decrypt(&ct);
@@ -615,7 +545,7 @@ mod tests {
             .iter()
             .map(|f| sk.decrypt(f).values[0])
             .map(|bi| {
-                sk.encrypt(&BfvPlaintext {
+                sk.encrypt(&Plaintext {
                     params: params.clone(),
                     values: [bi].to_vec().into_boxed_slice(),
                 })
@@ -712,69 +642,6 @@ mod tests {
     }
 
     #[test]
-    fn test_decompose_constant() {
-        let mut rng = thread_rng();
-        let degree = 8;
-        let pt_moduli = generate_prime(55, 2 * 1048576, (1 << 55) - 1).unwrap();
-        let ct_moduli = BfvParameters::generate_moduli(&[62], degree).unwrap();
-        // let params = Arc::new(BfvParameters::new(degree, pt_moduli, ct_moduli, 10));
-        let bit_decomp = BitDecomposition { base: 4, l: 8 };
-        let params = Arc::new(BfvParameters::new(
-            degree, pt_moduli, ct_moduli, 10, bit_decomp,
-        ));
-        let sk = SecretKey::generate(&params);
-
-        let constant = params.rq_context.rns.garner[0].clone();
-        dbg!(constant.bits());
-
-        let decomp_bits = 30usize;
-        let parent_bits = 60usize;
-
-        let decomposed_pts = decompose_bits(&constant, parent_bits, decomp_bits);
-        let decomposed_cts = decompose_constant(&constant, &sk, parent_bits, decomp_bits);
-        let base = BigUint::one() << decomp_bits;
-
-        izip!(decomposed_pts.iter(), decomposed_cts.iter())
-            .enumerate()
-            .for_each(|(index, (pt, ct))| {
-                dbg!(pt);
-                dbg!(sk.decrypt(ct).values);
-                let pow = base.pow(index as u32);
-                dbg!(&pow, &pow * pt, (&pow * pt).bits(), &pow.bits());
-                let v = ct * &pow;
-                dbg!(sk.decrypt(&v).values);
-                dbg!();
-                dbg!();
-                dbg!();
-            });
-
-        // decomposed_cts.iter().enumerate().for_each(|(index, c)| {});
-
-        // let mut final_value = decomposed_cts[0].clone();
-        // for i in (0..(parent_bits / decomp_bits)) {
-        //     let pow = base.pow(i as u32);
-        //     let value = &decomposed_cts[i] * &pow;
-        //     final_value = &final_value + &value;
-        // }
-
-        // // let mut one_poly = Poly::try_from_vec_u64(&params.rq_context, &vec![1u64]);
-        // // one_poly.change_representation(Representation::Ntt);
-        // // let b_ksk = Ksk::new(&sk, &one_poly);
-        // // let b0 = BfvCipherText {
-        // //     params: params.clone(),
-        // //     cts: vec![b_ksk.c0[0].clone(), b_ksk.c1[1].clone()],
-        // // };
-
-        // let mut ideal_m = Poly::try_from_vec_u64(&sk.params.rq_context, &[1u64]);
-        // ideal_m.change_representation(Representation::Ntt);
-        // // let zx = BigUint::from_u64(5).unwrap();
-        // ideal_m *= &constant;
-
-        // dbg!(sk.decrypt(&final_value).values);
-        // dbg!(measure_noise_tmp(&params, ideal_m, &sk, &final_value));
-    }
-
-    #[test]
     fn test_bit_vector() {
         let m = BigUint::from_u128(u128::MAX - 1).unwrap();
         let bits = bit_vector(128, &m);
@@ -838,24 +705,6 @@ pub fn decompose_bits(m: &BigUint, parent_bits: usize, decomp_bits: usize) -> Ve
         .collect();
 
     decomp_m
-}
-
-pub fn decompose_constant(
-    m: &BigUint,
-    sk: &SecretKey,
-    parent_bits: usize,
-    decomp_bits: usize,
-) -> Vec<BfvCipherText> {
-    let bits = decompose_bits(m, parent_bits, decomp_bits);
-    assert!(bits.len() == (parent_bits / decomp_bits));
-
-    bits.iter()
-        .map(|b| {
-            let pt = BfvPlaintext::new(&sk.params, &vec![*b]);
-            let ct = sk.encrypt(&pt);
-            ct
-        })
-        .collect()
 }
 
 pub fn measure_noise_tmp(
