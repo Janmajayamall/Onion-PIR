@@ -117,7 +117,9 @@ impl Server {
         let mut first_dim_cts = eval_key.unpack(query_cts[0].clone());
         first_dim_cts = first_dim_cts.as_slice()[..self.first_dim].to_vec();
 
-        let rgsws_count = ilog2(self.db.len() / self.first_dim) / ilog2(self.dim);
+        let dimensions = ilog2(self.db.len() / self.first_dim) / ilog2(self.dim) + 1;
+
+        let rgsws_count = (dimensions - 1) * self.dim;
         let mut rgsws = vec![];
         let mut vals = vec![];
         for i in 1..query_cts.len() {
@@ -423,14 +425,14 @@ mod tests {
         ));
 
         // Pre-processing
-        let db: Vec<Plaintext> = (0..8)
+        let db: Vec<Plaintext> = (0..16)
             .into_iter()
             .map(|i| Plaintext::new(&params, &vec![i, i, i, i]))
             .collect();
 
         // Client side
         let sk = &SecretKey::generate(&params);
-        let query = vec![3usize, 0];
+        let query = vec![3usize, 1, 1];
         let client = Client::new(4, 2);
         let query_encoded = client.encode(query, db.len(), &params, &sk);
         dbg!(&query_encoded);
