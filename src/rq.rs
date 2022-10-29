@@ -1,6 +1,6 @@
 use crate::{
     ntt::NttOperator,
-    poly::{self, Modulus},
+    modulus::{self, Modulus},
     rns::{RnsContext, RnsScaler, ScalingFactor},
     utils::{decompose_bits, sample_vec_cbd},
 };
@@ -34,7 +34,6 @@ pub struct Substitution {
 impl Substitution {
     pub fn new(exponent: usize) -> Self {
         // TODO: Why is this necessary ? https://github.com/tlepoint/fhe.rs/blob/8aafe4396d0b771e6aa25257c7daa61c109eb367/crates/fhe-math/src/rq/mod.rs#L54
-
         Substitution { exponent }
     }
 }
@@ -339,8 +338,7 @@ impl Poly {
         poly
     }
 
-    ///
-    /// Ref - https://github.com/Janmajayamall/fhe.rs/blob/8aafe4396d0b771e6aa25257c7daa61c109eb367/crates/fhe-math/src/rq/mod.rs#L243
+    /// Ref - https://github.com/tlepoint/fhe.rs/blob/8aafe4396d0b771e6aa25257c7daa61c109eb367/crates/fhe-math/src/rq/mod.rs#L243
     pub fn random_from_seed(
         ctx: &Arc<RqContext>,
         representation: Representation,

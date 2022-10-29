@@ -2,7 +2,7 @@ use crate::ksk::Ksk;
 use crate::rns::ScalingFactor;
 use crate::rq::{BitDecomposition, Poly, Representation, RqContext, RqScaler, Substitution};
 use crate::{
-    poly::Modulus,
+    modulus::Modulus,
     utils::{generate_prime, sample_vec_cbd},
 };
 use ndarray::Axis;

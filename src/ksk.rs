@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use crate::{
     bfv::{BfvCipherText, Plaintext},
-    poly::Modulus,
+    modulus::Modulus,
     rq::Representation,
 };
 use itertools::{izip, Itertools};
@@ -34,8 +34,6 @@ enum KskType {
 
 impl Ksk {
     pub fn new_with_pt(sk: &SecretKey, from: &Plaintext) -> Self {
-        // let mut from = Poly::try_from_vec_u64(&sk.params.rq_context, &from.values);
-        // from.change_representation(Representation::Ntt);
         Self::new(sk, &from.to_poly())
     }
 

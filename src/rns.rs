@@ -1,4 +1,4 @@
-use crate::poly::Modulus;
+use crate::modulus::Modulus;
 use crate::utils::{div_ceil, ilog2, U256};
 use crypto_bigint::U192;
 use itertools::{izip, Itertools};
@@ -89,6 +89,7 @@ impl RnsContext {
     }
 }
 
+/// Taken from -https://github.com/tlepoint/fhe.rs/blob/b573138d682e69c3553c2e4ae4a1b7f7a65dbe5d/crates/fhe-math/src/rns/scaler.rs#L12-L13
 #[derive(Debug, Clone, PartialEq)]
 pub struct ScalingFactor {
     numerator: BigUint,
@@ -109,6 +110,7 @@ impl ScalingFactor {
     }
 }
 
+/// Taken from https://github.com/tlepoint/fhe.rs/blob/8aafe4396d0b771e6aa25257c7daa61c109eb367/crates/fhe-math/src/rq/scaler.rs#L0-L1
 #[derive(Debug, Clone, PartialEq)]
 pub struct RnsScaler {
     from: Arc<RnsContext>,
@@ -238,7 +240,6 @@ impl RnsScaler {
     // theta_gamma by 2**127 and rounds. It outputs the projection of gamma in the
     // RNS context, and theta_lo, theta_hi, theta_sign such that theta_gamma =
     // (-1)**theta_sign * (theta_lo + 2^64 * theta_hi).
-    // Ref - https://github.com/Janmajayamall/fhe.rs/blob/6361fa3ce322b16551cfe4856a49e3933d85c872/crates/fhe-math/src/rns/mod.rs#L115
     fn extract_projection_and_theta(
         ctx: &RnsContext,
         input: &BigUint,

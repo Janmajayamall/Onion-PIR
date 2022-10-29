@@ -7,8 +7,7 @@ use super::bfv::BfvCipherText;
 use crate::{
     bfv::{BfvParameters, Plaintext, SecretKey},
     ksk::Ksk,
-    poly::Modulus,
-    rq::{BitDecomposition, Poly, Representation, RqContext},
+    rq::{Poly, Representation, RqContext},
 };
 
 use itertools::Itertools;
@@ -23,7 +22,6 @@ pub struct RgswCt {
     pub ksk1: Ksk,
 }
 
-/// IMPORTANT SWITCH BFV TO RLWE (i.e. scaling of M isn't default)
 impl RgswCt {
     pub fn encrypt_poly(sk: &SecretKey, m: &Poly) -> Self {
         assert!(sk.params.rq_context == m.context);
@@ -88,7 +86,7 @@ mod tests {
     use super::*;
     use crate::{
         bfv::{BfvParameters, Plaintext},
-        poly::Modulus,
+        modulus::Modulus,
         rns::RnsContext,
         rq::{BitDecomposition, RqContext},
         utils::generate_prime,
@@ -96,9 +94,8 @@ mod tests {
 
     use itertools::izip;
     use num_bigint::BigUint;
-    use num_traits::ToPrimitive;
+
     use rand::thread_rng;
-    use sha2::digest::typenum::Mod;
     use std::{sync::Arc, vec};
 
     #[test]
@@ -335,11 +332,10 @@ mod tests {
             let v1 = params.plaintext_modulus.random_vec(params.degree, &mut rng);
             let v2 = params.plaintext_modulus.random_vec(params.degree, &mut rng);
 
-            let m1 = Plaintext::new(&params, &v1);
-            let m2 = Plaintext::new(&params, &v2);
-
-            let bfv_ct = sk.encrypt(&m1);
-            let rgsw_ct = RgswCt::encrypt(&sk, &m2);
+            let bfv_ct = sk.encrypt(&Plaintext::new(&params, &v1));
+            let mut m2_poly = Poly::try_from_vec_u64(&params.rq_context, &v2);
+            m2_poly.change_representation(Representation::Ntt);
+            let rgsw_ct = RgswCt::encrypt_poly(&sk, &m2_poly);
 
             let (ec0, ec1) = RgswCt::external_product(&rgsw_ct, &bfv_ct);
             let product = sk.decrypt(&BfvCipherText {
@@ -366,50 +362,4 @@ mod tests {
             assert_eq!(product.values, values.into());
         }
     }
-}
-
-fn record_difference(real: &Poly, ideal: &Poly) {
-    let mut diff = real - ideal;
-    diff.change_representation(Representation::PowerBasis);
-
-    Vec::<BigUint>::from(&diff).iter().for_each(|coeff| {
-        dbg!(std::cmp::min(
-            coeff.bits(),
-            real.context.rns.product.bits() - coeff.bits()
-        ));
-    });
-}
-
-fn measure_noise_tmp(
-    params: &Arc<BfvParameters>,
-    ideal_m: Poly,
-    sk: &SecretKey,
-    ct: &BfvCipherText,
-) -> usize {
-    let pt = Poly::try_from_vec_u64(&ct.params.rq_context, &[1u64]);
-
-    // TODO: REMOVE
-    let constant = sk.params.rq_context.rns.garner[0].clone();
-
-    let mut bg = Poly::try_from_bigint(&sk.params.rq_context, &[constant.clone()]);
-    bg.change_representation(Representation::Ntt);
-
-    let mut sk = Poly::try_from_vec_i64(&params.rq_context, &sk.coeffs);
-    sk.change_representation(Representation::Ntt);
-    let mut m = &ct.cts[1] * &sk;
-    m += &ct.cts[0];
-
-    bg -= &ideal_m;
-    bg.change_representation(Representation::PowerBasis);
-
-    let mut noise = 0usize;
-    let ct_moduli = &params.rq_context.rns.product.clone();
-
-    Vec::<BigUint>::from(&bg).iter().for_each(|coeff| {
-        noise = std::cmp::max(
-            noise,
-            std::cmp::min(coeff.bits(), (ct_moduli - coeff).bits()) as usize,
-        );
-    });
-    noise
 }

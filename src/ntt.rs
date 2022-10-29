@@ -1,4 +1,4 @@
-use crate::{poly::Modulus, utils::is_prime};
+use crate::{modulus::Modulus, utils::is_prime};
 use num_traits::cast::ToPrimitive;
 use rand::{Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;

@@ -1,9 +1,8 @@
 mod bfv;
-// mod client;
 mod evaluations;
 mod ksk;
+mod modulus;
 mod ntt;
-mod poly;
 mod rgsw;
 mod rns;
 mod rq;

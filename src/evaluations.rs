@@ -1,7 +1,7 @@
 use crate::{
     bfv::{BfvCipherText, BfvParameters, GaliosKey, Plaintext, SecretKey},
     ksk::Ksk,
-    poly::Modulus,
+    modulus::Modulus,
     rgsw::RgswCt,
     rq::{Poly, Representation, RqContext, Substitution},
     utils::ilog2,

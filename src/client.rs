@@ -1,162 +1,37 @@
-use crate::rgsw::Rgsw;
-use rand_distr::num_traits::Pow;
-use std::{sync::Arc, vec};
+/// Imagine the db vector as a hypercube of `d` dimensions:
+/// [d0, d1, d2, d3, d4...d{d-1}].
+/// To reach a specific query index you iteratively
+/// divide current db dimension with next hypercube dimension.
+/// At each iteration (i.e. for current dimension) your dimension specific query
+/// index is equal to last query index `mod` current db dimension.
+/// You next query index is equal to last query index / current db dimension.
+/// 
+/// Once you have obtained vector containing dimension specific query
+/// indexes. You need to expand them into a vec to 0s and 1s for bfv ciphertext
+/// encoding. For example, consider following as dimension specific query indexes
+/// [8, 2, 3].
+/// You expand them to
+/// [
+///     [
+///         // first_dim len
+///         0,0,0,0,0,0,0,1,0,0,...,0
+///     ],
+///     [
+///         // normal_dim len
+///         0,0,1,0
+///     ],
+///     [
+///         // normal_dim len
+///         0,0,0,1
+///     ]
+/// ]
+/// and encode them into Bfv ciphertext. This means simply flat
+/// map all values as coefficients of the Bfv plaintext
+/// polynomial.
 
-use crate::{
-    bfv::{BfvCipherText, BfvParameters, BfvPlaintext, BfvPublicKey},
-    poly::{Context, Modulus, Poly},
-    rgsw::Ksk,
-    utils::{ilog2, mod_inverse},
-};
 
-pub struct QueryParams {
-    // 128 by default
-    pub first_dim: u64,
-    // 4 by default
-    pub normal_dim: u64,
-    pub beta: u64,
-    pub l: u64,
-    pub db_len: u64,
-}
 
-fn build_query(
-    query_params: QueryParams,
-    mut db_dim: u64,
-    mut query_index: u64,
-    bfv_pk: &BfvPublicKey,
-) -> BfvCipherText {
-    // `gadget_beta` is for RLWE to RGSW trick. Make sure
-    // it is a power of 2 and smaller than `t`.
-    assert!(query_params.beta.is_power_of_two());
 
-    let mut no_of_dims = 0;
-    let mut first = true;
-    while db_dim != 0 {
-        if first {
-            db_dim /= query_params.first_dim;
-            first = false;
-        } else {
-            db_dim /= query_params.normal_dim;
-        }
-        no_of_dims += 1;
-    }
-
-    let mut dims = Vec::new();
-    (1..no_of_dims).into_iter().for_each(|dim| {
-        if dim == 1 {
-            dims.push(query_index % query_params.first_dim);
-            query_index /= query_params.first_dim;
-        } else {
-            dims.push(query_index % query_params.normal_dim);
-            query_index /= query_params.normal_dim
-        }
-    });
-
-    // Imagine the db vector as a hypercube of `d` dimensions:
-    // [d0, d1, d2, d3, d4...d{d-1}].
-    // To reach a specific query index you iteratively
-    // divide current db dimension with next hypercube dimension.
-    // At each iteration (i.e. for current dimension) your dimension specific query
-    // index is equal to last query index `mod` current db dimension.
-    // You next query index is equal to last query index / current db dimension.
-    //
-    // Once you have obtained vector containing dimension specific query
-    // indexes. You need to expand them into a vec to 0s and 1s for bfv ciphertext
-    // encoding. For example, consider following as dimension specific query indexes
-    // [8, 2, 3].
-    // You expand them to
-    // [
-    //     [
-    //         // first_dim len
-    //         0,0,0,0,0,0,0,1,0,0,...,0
-    //     ],
-    //     [
-    //         // normal_dim len
-    //         0,0,1,0
-    //     ],
-    //     [
-    //         // normal_dim len
-    //         0,0,0,1
-    //     ]
-    // ]
-    // and encode them into Bfv ciphertext. This means simply flat
-    // map all values as coefficients of the Bfv plaintext
-    // polynomial.
-    let mut expanded_dims = Vec::new();
-    dims.iter().enumerate().for_each(|(index, value)| {
-        let mut expanded_dim = Vec::<u64>::new();
-        (0..(if index == 0 {
-            query_params.first_dim - 1
-        } else {
-            query_params.normal_dim - 1
-        }))
-            .into_iter()
-            .for_each(|i| {
-                if i == *value {
-                    expanded_dim.push(1);
-                } else {
-                    expanded_dim.push(0);
-                }
-            });
-        expanded_dims.push(expanded_dim);
-    });
-
-    let bfv_params = bfv_pk.params.clone();
-
-    // generate coefficients
-    let l = ((bfv_params.q as f64).log2() / (query_params.beta as f64).log2()) as u64;
-    // FIXME: For some reason (q/B^i) != (q * B_inv). So this means we
-    // will have to calculate integer values
-    let coeffs: Vec<_> = (l..0)
-        .map(|i| ((bfv_params.q as f64) / (query_params.beta as f64).pow(i as i8)) as u64)
-        .collect();
-
-    // We need to further expand each value to `l` values in dimension vector of every dimension, except first
-    // to perform RLWE to RGSW conversion trick
-    // TODO: Explain what the trick is
-    let mut normal_dims_3d: Vec<Vec<Vec<u64>>> = vec![];
-
-    // handle first dim separately
-    let d: Vec<_> = expanded_dims[0].iter().map(|bit| vec![*bit]).collect();
-    normal_dims_3d.push(d);
-
-    expanded_dims.iter().skip(1).for_each(|dim_vec| {
-        let dim_vec_2d: Vec<Vec<_>> = dim_vec
-            .iter()
-            .map(|bit_value| {
-                let f: Vec<_> = coeffs.iter().map(|coeff| bit_value * coeff).collect();
-                f
-            })
-            .collect();
-        normal_dims_3d.push(dim_vec_2d)
-    });
-
-    // encode dimension specific query vector bits into bfv ciphertext
-    let pt = BfvPlaintext::new(
-        &bfv_pk.params,
-        normal_dims_3d
-            .iter()
-            .flatten()
-            .into_iter()
-            .flatten()
-            .into_iter()
-            .copied()
-            .collect(),
-    );
-
-    // So now we have a Bfv ciphertext that encrypts
-    // a polynomial that consists of bits as its
-    // coefficients.
-    // In order to determine indexes the client is
-    // interested in hypercube, the server needs to
-    // convert ciphertext encrypting polynomial with
-    // bits encoded as coefficients to ciphertexts
-    // encrypting individual bits. This is achieved
-    // using `Subs(•,k)` operation.
-    bfv_pk.encrypt(&pt.poly.coeffs)
-}
-
-///
 /// Let's consider the following bit vector
 /// [0, 1, 0, 1, 1, 0...]
 ///
@@ -213,134 +88,3 @@ fn build_query(
 ///                     2^(i+1)*[x0]         2^(i+1)*[x4] * x^-(2^i)
 ///
 /// Ref - Algorithm 3 & 4 of https://eprint.iacr.org/2019/736.pdf
-fn resolve_query(
-    query_params: QueryParams,
-    query_ct: &BfvCipherText,
-    n_s_rgsw: &Rgsw,
-    ksks: Vec<Ksk>,
-) -> (Vec<BfvCipherText>, Vec<Vec<Rgsw>>) {
-    let mut enc_bits: Vec<BfvCipherText> = vec![query_ct.clone()];
-    let n = query_ct.params.poly_ctx.degree;
-    let logn = ilog2(n);
-
-    // TODO: Figure out way to check the order of `ksks`
-    // such that their `subs_k` match: n, n/2, n/4...n/2^logn - 1
-    assert!(ksks.len() == logn - 1);
-
-    // Should be in `Rt` since all X^-(2^i) polys are plaintext
-    let rt_ctx = Arc::new(Context::new(
-        Modulus {
-            q: query_ct.params.t,
-        },
-        query_ct.params.n,
-    ));
-    let x_polys = gen_x_pow_polys(&rt_ctx, n);
-
-    for i in 0..logn {
-        let k = (n as usize / 2.pow(i - 1) as usize) + 1;
-        // make sure that `Ksk` is for subs ops at current branch `i`
-        assert!(k as u64 == ksks[i].subs_k.unwrap());
-
-        let mut curr_branch: Vec<BfvCipherText> = vec![];
-        for j in 0..enc_bits.len() {
-            // c_even = c + Subs(•, k)
-            curr_branch.push(BfvCipherText::add_ciphertexts(
-                &enc_bits[j],
-                &Ksk::substitute(&ksks[i], &enc_bits[j]),
-            ));
-
-            // c_odd = c - Subs(•, k)
-            // c_odd = c_odd * X^-(2^i)
-            let c_odd = BfvCipherText::multiply_pt_poly(
-                &BfvCipherText::sub_ciphertexts(
-                    &enc_bits[j],
-                    &Ksk::substitute(&ksks[i], &enc_bits[j]),
-                ),
-                &x_polys[i],
-            );
-            curr_branch.push(c_odd);
-        }
-
-        enc_bits = curr_branch;
-    }
-
-    assert!(enc_bits.len() == query_ct.params.n);
-
-    // Note that enc_bits = [RLWE(n * b0), RLWE(n * b1), ...RLWE(n * b{n-1})].
-    // Thus we multiply all RLWEs with inverse of `n` in pt modulus `t` to get
-    // RLWE(bi)
-    let n_inv = mod_inverse(query_ct.params.n as u64, query_ct.params.t).unwrap();
-    let enc_bits: Vec<_> = enc_bits
-        .iter()
-        // change this to inverse
-        .map(|ct| BfvCipherText::multiply_constant(ct, n_inv))
-        .collect();
-
-    // Now we structure cts of bits into encrypted query vector for every dimension.
-    // Note that query vector of `first_dim` consists of RLWE cts.
-    // For the rest of the dimensions we have vector of RGSW cts, thus we need
-    // to convert RLWE cts to RGSW cts.
-    let first_dim = &enc_bits[..query_params.first_dim as usize];
-    let rest_dims = &enc_bits[query_params.first_dim as usize..];
-
-    let l = ((query_ct.params.q as f64).log2() / (query_params.beta as f64).log2()) as u64;
-    let dim_vecs: Vec<Vec<Rgsw>> = rest_dims
-        .chunks_exact((l * query_params.normal_dim) as usize)
-        .into_iter()
-        .map(|dim_chunks| {
-            // dim_chunks / l = dimension size.
-            //
-            // Each m_rlev is RLEV(b), where `b` is a single bit of the dimension vec.
-            // We need to go from m_rlev to RGSW(m).
-            // Recall that structure of RGSW(m) = [RLEV(-sm), RLEV(m)].
-            // So we need a way to construct RLEV(-sm) from RLEV(m).
-            //
-            // Notice that
-            // RLEV(b) is of form
-            // [RLWE(q / B^i * b) for i in [1..l]]
-            // RLEV(-sb) (i.e. n_sm_rlev below) is of form
-            // [RLWE(q / B^i * -sb) for i in [1..l]]
-            //
-            // To go from RLWE(q / B^i * b) to RLWE(q / B^i * -sb)
-            // we perform external product between RGSW(-s) and RLWE(q / B^i * b).
-            // (Recall that external product between RGSW(m1) and RLWE(m2) gives
-            // RLWE(m1 * m2))
-            //
-            let dim_vec = dim_chunks
-                .chunks_exact(l as usize)
-                .into_iter()
-                .map(|m_rlev| {
-                    let n_sm_rlev: Vec<_> = m_rlev
-                        .iter()
-                        .map(|q_beta_m_rlwe| Rgsw::external_product(n_s_rgsw, q_beta_m_rlwe))
-                        .collect();
-                    Rgsw::new(
-                        vec![n_sm_rlev, m_rlev.into()],
-                        query_params.beta,
-                        query_params.l,
-                    )
-                });
-            assert!(dim_vec.len() == query_params.normal_dim as usize);
-            dim_vec.collect()
-        })
-        .collect();
-    (first_dim.into(), dim_vecs)
-}
-
-pub fn gen_x_pow_polys(
-    // x^-(2^0) ... x^-(2^(logn))
-    poly_ctx: &Arc<Context>,
-    n: usize,
-) -> Vec<Poly> {
-    // X^-k = -X^(N-k)
-    (0..ilog2(n))
-        .into_iter()
-        .map(|i| {
-            let mut poly = Poly::zero(poly_ctx);
-            poly.coeffs[1] = 1; // X
-            poly.shift_powers((poly_ctx.degree - 2.pow(i) as usize) as u64); // X^(N-k)
-            poly = -poly; // -X^(N-k)
-            poly
-        })
-        .collect()
-}
