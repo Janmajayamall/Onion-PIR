@@ -288,3 +288,33 @@ impl ShrAssign<usize> for U256 {
         }
     }
 }
+
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_decompose_bits() {
+        let value = u64::MAX - 1;
+        let decomposed = decompose_bits(value, 64, 4);
+        let base = 1 << 4;
+        let recovered = decomposed
+            .iter()
+            .rev()
+            .fold(0u64, |acc, b| (acc * &base) + *b);
+
+        assert_eq!(value, recovered);
+    }
+
+    #[test]
+    fn test_bit_vector() {
+        let m = u64::MAX;
+        let bits = bit_vector(64, m);
+
+        let value = bits
+            .iter()
+            .rev()
+            .fold(0u64, |acc, bit| (acc * 2u64) + (*bit as u64));
+
+        assert_eq!(value, m);
+    }
+}
