@@ -3,6 +3,7 @@ mod evaluations;
 mod ksk;
 mod modulus;
 mod ntt;
+mod pvw;
 mod rgsw;
 mod rns;
 mod rq;
