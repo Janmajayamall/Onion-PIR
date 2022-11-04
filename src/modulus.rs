@@ -241,6 +241,11 @@ impl Modulus {
         r
     }
 
+    pub fn random<R: RngCore + CryptoRng>(&self, rng: &mut R) -> u64 {
+        let uniform_dist = Uniform::from(0..self.p);
+        rng.sample(uniform_dist)
+    }
+
     pub fn random_vec<R: RngCore + CryptoRng>(&self, size: usize, rng: &mut R) -> Vec<u64> {
         let uniform_dist = Uniform::from(0..self.p);
         rng.sample_iter(uniform_dist).take(size).collect()
