@@ -8,12 +8,12 @@ use rand_distr::Uniform;
 use sha2::digest::typenum::Mod;
 
 #[derive(Debug)]
-struct PvwParams {
-    n: usize,
-    ell: usize,
-    m: usize,
-    q: u64,
-    variance: usize,
+pub struct PvwParams {
+    pub n: usize,
+    pub ell: usize,
+    pub m: usize,
+    pub q: u64,
+    pub variance: usize,
 }
 
 impl Default for PvwParams {
@@ -34,7 +34,7 @@ impl PvwParams {
     }
 }
 
-struct PvwSk(Vec<Vec<u64>>);
+pub struct PvwSk(Vec<Vec<u64>>);
 
 impl PvwSk {
     pub fn gen_sk(params: &PvwParams) -> PvwSk {
@@ -114,7 +114,7 @@ impl PvwSk {
     }
 }
 
-struct PvwPk(Vec<PvwCiphertext>);
+pub struct PvwPk(Vec<PvwCiphertext>);
 
 impl PvwPk {
     pub fn encrypt(&self, params: &PvwParams, m: Vec<u64>) -> PvwCiphertext {
@@ -149,11 +149,11 @@ impl PvwPk {
 }
 
 #[derive(Clone, Debug)]
-struct PvwCiphertext {
+pub struct PvwCiphertext {
     /// a \in (Z_q)^n
-    a: Vec<u64>,
+    pub a: Vec<u64>,
     /// b \in (Z_q)^ell
-    b: Vec<u64>,
+    pub b: Vec<u64>,
 }
 
 mod tests {
