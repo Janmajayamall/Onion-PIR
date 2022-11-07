@@ -1,6 +1,6 @@
 use crate::{
-    ntt::NttOperator,
     modulus::{self, Modulus},
+    ntt::NttOperator,
     rns::{RnsContext, RnsScaler, ScalingFactor},
     utils::{decompose_bits, sample_vec_cbd},
 };
@@ -130,6 +130,9 @@ pub struct RqContext {
     pub ntt_ops: Vec<NttOperator>,
     pub degree: usize,
     pub bit_decomposition: BitDecomposition,
+    pub next_ctx: Option<Arc<RqContext>>,
+    pub q_last_inv_mod: Vec<u64>,
+    pub q_last_inv_mod_shoup: Vec<u64>,
 }
 
 impl Debug for RqContext {
@@ -154,6 +157,27 @@ impl RqContext {
         let moduli = rns.moduli.clone();
         let ntt_ops = moduli.iter().map(|m| NttOperator::new(m, degree)).collect();
 
+        let next_ctx = {
+            if moduli_64.len() >= 2 {
+                Some(Arc::new(RqContext::new(
+                    moduli_64[..(moduli_64.len() - 1)].to_vec(),
+                    degree,
+                    bit_decomposition.clone(),
+                )))
+            } else {
+                None
+            }
+        };
+
+        let q_last = moduli.last().map(|m| m.p).unwrap();
+        let mut q_last_inv_mod = vec![];
+        let mut q_last_inv_mod_shoup = vec![];
+        for qi in &moduli[..(moduli.len() - 1)] {
+            let inv = qi.inv(qi.reduce(q_last));
+            q_last_inv_mod.push(inv);
+            q_last_inv_mod_shoup.push(qi.shoup(inv));
+        }
+
         Self {
             moduli_64,
             moduli,
@@ -161,7 +185,30 @@ impl RqContext {
             ntt_ops,
             degree,
             bit_decomposition,
+            next_ctx,
+            q_last_inv_mod,
+            q_last_inv_mod_shoup,
         }
+    }
+
+    pub fn switch_iterations(&self, to_ctx: &Arc<RqContext>) -> Option<usize> {
+        let mut count = 0usize;
+        let mut curr_ctx = Arc::new(self.clone());
+
+        if curr_ctx == *to_ctx {
+            return Some(0);
+        }
+
+        while (curr_ctx.next_ctx.is_some()) {
+            count += 1;
+            curr_ctx = curr_ctx.next_ctx.as_ref().unwrap().clone();
+
+            if curr_ctx == *to_ctx {
+                return Some(count);
+            }
+        }
+
+        None
     }
 }
 
@@ -294,6 +341,50 @@ impl Poly {
             }
         }
         poly
+    }
+
+    pub fn mod_switch_down_next(&mut self) {
+        assert!(self.context.next_ctx.is_some());
+        assert!(self.representation == Representation::PowerBasis);
+
+        let q_len = self.context.moduli.len();
+        let q_last = self.context.moduli.last().unwrap();
+        let q_last_div_2 = q_last.modulus() / 2;
+
+        let (mut q_polys, q_poly_last) = self.coefficients.view_mut().split_at(Axis(0), q_len - 1);
+
+        izip!(
+            q_polys.outer_iter_mut(),
+            self.context.moduli.iter(),
+            self.context.q_last_inv_mod.iter(),
+            self.context.q_last_inv_mod_shoup.iter()
+        )
+        .for_each(|(poly, qi, inv, inv_shoup)| {
+            // Ref - https://github.com/tlepoint/fhe.rs/blob/8aafe4396d0b771e6aa25257c7daa61c109eb367/crates/fhe-math/src/rq/mod.rs#L435
+            let q_last_div_2_mod_qi = qi.modulus() - qi.reduce(q_last_div_2); // Up to qi.modulus()
+            for (coeff, q_last_coeff) in izip!(poly, q_poly_last.iter()) {
+                // (x mod q_last - q_L/2) mod q_i
+                let tmp = qi.lazy_reduce_ct(*q_last_coeff) + q_last_div_2_mod_qi; // Up to 3 * qi.modulus()
+
+                // ((x mod q_i) - (x mod q_last) + (q_L/2 mod q_i)) mod q_i
+                // = (x - x mod q_last + q_L/2) mod q_i
+                *coeff += 3 * qi.modulus() - tmp; // Up to 4 * qi.modulus()
+
+                // q_last^{-1} * (x - x mod q_last) mod q_i
+                *coeff = qi.mul_shoup(*coeff, *inv, *inv_shoup);
+            }
+        });
+
+        self.coefficients.remove_index(Axis(0), q_len - 1);
+        self.context = self.context.next_ctx.as_ref().unwrap().clone();
+    }
+
+    pub fn mod_switch_to(&mut self, ctx: &Arc<RqContext>) {
+        let iterations = self.context.switch_iterations(ctx).unwrap();
+
+        for _ in 0..iterations {
+            self.mod_switch_down_next();
+        }
     }
 
     pub fn zero(ctx: &Arc<RqContext>, representation: Representation) -> Poly {

@@ -19,7 +19,6 @@ pub struct RnsContext {
     pub garner: Vec<BigUint>,
     pub product: BigUint,
     pub product_dig: BigUintDig,
-    pub next_ctx: Option<Arc<RnsContext>>,
 }
 
 impl Debug for RnsContext {
@@ -39,7 +38,7 @@ impl Debug for RnsContext {
 impl RnsContext {
     pub fn new(moduli_u64: &Vec<u64>) -> Self {
         //TODO: Check that moduli are coprime
-        let moduli = moduli_u64.iter().map(|m| Modulus::new(*m)).collect();
+        let moduli = moduli_u64.iter().map(|m| Modulus::new(*m)).collect_vec();
 
         let product = moduli_u64.iter().fold(BigUint::one(), |acc, q| acc * *q);
         let product_dig = moduli_u64.iter().fold(BigUintDig::one(), |acc, q| acc * *q);
@@ -60,13 +59,6 @@ impl RnsContext {
             .map(|(q_s, q_t)| q_s * *q_t)
             .collect();
 
-        let mut next_ctx = None;
-        if moduli_u64.len() != 1 {
-            next_ctx = Some(Arc::new(RnsContext::new(
-                &moduli_u64[..(moduli_u64.len() - 1)].to_vec(),
-            )));
-        }
-
         Self {
             moduli_u64: moduli_u64.clone(),
             moduli,
@@ -75,7 +67,6 @@ impl RnsContext {
             garner,
             product,
             product_dig,
-            next_ctx,
         }
     }
 
@@ -92,26 +83,6 @@ impl RnsContext {
             res += garner_i * *x;
         });
         res % &self.product
-    }
-
-    pub fn switch_iterations(&self, to_ctx: Arc<RnsContext>) -> Option<usize> {
-        let mut count = 0usize;
-        let mut curr_ctx = Arc::new(self.clone());
-
-        if curr_ctx == to_ctx {
-            return Some(0);
-        }
-
-        while (curr_ctx.next_ctx.is_some()) {
-            count += 1;
-            curr_ctx = curr_ctx.next_ctx.as_ref().unwrap().clone();
-
-            if curr_ctx == to_ctx {
-                return Some(count);
-            }
-        }
-
-        None
     }
 
     pub fn modulus(&self) -> &BigUint {
