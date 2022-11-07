@@ -351,8 +351,11 @@ impl Poly {
         let q_last = self.context.moduli.last().unwrap();
         let q_last_div_2 = q_last.modulus() / 2;
 
-        let (mut q_polys, q_poly_last) = self.coefficients.view_mut().split_at(Axis(0), q_len - 1);
-
+        let (mut q_polys, mut q_poly_last) =
+            self.coefficients.view_mut().split_at(Axis(0), q_len - 1);
+        q_poly_last
+            .iter_mut()
+            .for_each(|coeff| *coeff = q_last.add(*coeff, q_last_div_2));
         izip!(
             q_polys.outer_iter_mut(),
             self.context.moduli.iter(),
@@ -636,12 +639,12 @@ mod tests {
     use crate::bfv::{BfvParameters, SecretKey};
 
     // Moduli to be used in tests.
-    const MODULI: &[u64; 1] = &[
+    const MODULI: &[u64; 5] = &[
         1153,
-        // 4611686018326724609,
-        // 4611686018309947393,
-        // 4611686018232352769,
-        // 4611686018171535361,
+        4611686018326724609,
+        4611686018309947393,
+        4611686018232352769,
+        4611686018171535361,
     ];
 
     #[test]
@@ -681,5 +684,36 @@ mod tests {
         p3.change_representation(Representation::PowerBasis);
         dbg!(p3);
         dbg!(q);
+    }
+
+    #[test]
+    fn mod_switch() {
+        let mut rng = thread_rng();
+
+        let mut current_ctx = Arc::new(RqContext::new(
+            MODULI.to_vec(),
+            8,
+            BitDecomposition { base: 4, l: 3 },
+        ));
+        let mut poly = Poly::random(&current_ctx, &mut rng, Representation::PowerBasis);
+        let mut last_poly = Vec::<BigUint>::from(&poly);
+        while current_ctx.next_ctx.is_some() {
+            let denom = current_ctx.rns.modulus().clone();
+
+            // Switch
+            current_ctx = current_ctx.next_ctx.as_ref().unwrap().clone();
+            let num = current_ctx.rns.modulus();
+            poly.mod_switch_down_next();
+            assert_eq!(poly.context, current_ctx);
+
+            let p = Vec::<BigUint>::from(&poly);
+            let expected_p = last_poly
+                .iter()
+                .map(|coeff| (((coeff * num) + (&denom >> 1)) / &denom) % current_ctx.rns.modulus())
+                .collect_vec();
+            assert_eq!(p, expected_p);
+
+            last_poly = expected_p;
+        }
     }
 }
