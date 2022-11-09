@@ -1,7 +1,9 @@
 use std::{sync::Arc, task::Poll};
 
+use crypto_bigint::rand_core::le;
 use itertools::izip;
 use num_bigint::BigUint;
+use sha2::digest::typenum::private::IsLessPrivate;
 
 use super::bfv::BfvCipherText;
 use crate::{
@@ -24,16 +26,17 @@ pub struct RgswCt {
 
 impl RgswCt {
     pub fn encrypt_poly(sk: &SecretKey, m: &Poly) -> Self {
-        assert!(sk.params.rq_context == m.context);
         assert!(m.representation == Representation::Ntt);
 
-        let mut sk_poly = Poly::try_from_vec_i64(&sk.params.rq_context, &sk.coeffs);
+        let level = sk.params.ctx_level(&m.context).unwrap();
+
+        let mut sk_poly = Poly::try_from_vec_i64(&m.context, &sk.coeffs);
         sk_poly.change_representation(Representation::Ntt);
 
         let s_m = &sk_poly * m;
 
-        let ksk0 = Ksk::new(sk, &s_m);
-        let ksk1 = Ksk::new(sk, m);
+        let ksk0 = Ksk::new(sk, &s_m, level, level);
+        let ksk1 = Ksk::new(sk, m, level, level);
 
         RgswCt { ksk0, ksk1 }
     }
@@ -41,18 +44,19 @@ impl RgswCt {
     pub fn encrypt(sk: &SecretKey, m: &Plaintext) -> Self {
         assert!(sk.params == m.params);
         let params = sk.params.clone();
+        let ctx = params.q_ctxs[m.level].clone();
 
-        let mut m_poly = Poly::try_from_vec_u64(&sk.params.rq_context, &m.values);
+        let mut m_poly = Poly::try_from_vec_u64(&ctx, &m.values);
         m_poly.change_representation(Representation::Ntt);
 
-        let mut s_poly = Poly::try_from_vec_i64(&params.rq_context, &sk.coeffs);
+        let mut s_poly = Poly::try_from_vec_i64(&ctx, &sk.coeffs);
         s_poly.change_representation(Representation::Ntt);
 
         let sm_poly = &s_poly * &m_poly;
 
         RgswCt {
-            ksk0: Ksk::new(sk, &sm_poly),
-            ksk1: Ksk::new(sk, &m_poly),
+            ksk0: Ksk::new(sk, &sm_poly, m.level, m.level),
+            ksk1: Ksk::new(sk, &m_poly, m.level, m.level),
         }
     }
 
@@ -112,38 +116,19 @@ mod tests {
             10,
             BitDecomposition { base: 4, l: 8 },
         ));
-        params.rq_context.rns.garner.iter().for_each(|gi| {
-            dbg!(gi);
-            dbg!(gi % pt_moduli);
-        });
 
         let sk = SecretKey::generate(&params);
-        let mut sk_poly = Poly::try_from_vec_i64(&params.rq_context, &sk.coeffs);
+        let ctx = params.q_ctxs[0].clone();
+        let mut sk_poly = Poly::try_from_vec_i64(&ctx, &sk.coeffs);
         sk_poly.change_representation(Representation::Ntt);
 
-        let mut m = Poly::try_from_vec_i64(&sk.params.rq_context, &sk.coeffs);
+        let mut m = Poly::try_from_vec_i64(&ctx, &sk.coeffs);
         m.change_representation(Representation::Ntt);
         let sk_rgsw = RgswCt::encrypt_poly(&sk, &m);
 
-        let pt_one = Plaintext::new(&params, &vec![1u64]);
+        let pt_one = Plaintext::new(&params, &vec![1u64], 0);
         let ex_rgsw = RgswCt::encrypt(&sk, &pt_one);
 
-        let bis = [
-            1084615932887104652u64,
-            88464820691527941,
-            1132762255576341106,
-        ]
-        .iter()
-        .map(|gi| sk.encrypt(&Plaintext::new(&params, &vec![*gi])));
-        // let skis: Vec<BfvCipherText> = bis
-        //     .map(|bi| {
-        //         let (c0, c1) = RgswCt::external_product(&sk_rgsw, &bi);
-        //         BfvCipherText {
-        //             params: params.clone(),
-        //             cts: vec![c0.clone(), c1.clone()],
-        //         }
-        //     })
-        //     .collect();
         let skis: Vec<BfvCipherText> = izip!(ex_rgsw.ksk1.c0.iter(), ex_rgsw.ksk1.c1.iter())
             .map(|(c0, c1)| {
                 let (c02, c12) = RgswCt::external_product(
@@ -151,11 +136,13 @@ mod tests {
                     &BfvCipherText {
                         params: params.clone(),
                         cts: vec![c0.clone(), c1.clone()],
+                        level: 0,
                     },
                 );
                 BfvCipherText {
                     params: params.clone(),
                     cts: vec![c02.clone(), c12.clone()],
+                    level: 0,
                 }
             })
             .collect();
@@ -166,24 +153,6 @@ mod tests {
 
         izip!(ex_rgsw.ksk0.c0.iter(), ex_rgsw.ksk0.c1.iter(), skis.iter()).for_each(
             |(ec0, ec1, cti)| {
-                println!(
-                    "Decrypted ex {:?}",
-                    sk.decrypt(&BfvCipherText {
-                        params: params.clone(),
-                        cts: vec![ec0.clone(), ec1.clone()]
-                    })
-                    .values
-                );
-
-                println!(
-                    "Decrypted ski {:?}",
-                    sk.decrypt(&BfvCipherText {
-                        params: params.clone(),
-                        cts: vec![cti.cts[0].clone(), cti.cts[1].clone()]
-                    })
-                    .values
-                );
-
                 let mut ex_poly = ec1 * &sk_poly;
                 ex_poly += ec0;
 
@@ -223,7 +192,8 @@ mod tests {
             BitDecomposition { base: 4, l: 8 },
         ));
         let sk = SecretKey::generate(&params);
-        let mut sk_poly = Poly::try_from_vec_i64(&params.rq_context, &sk.coeffs);
+        let ctx = params.q_ctxs[0].clone();
+        let mut sk_poly = Poly::try_from_vec_i64(&ctx, &sk.coeffs);
         sk_poly.change_representation(Representation::Ntt);
 
         let sk_rgsw = RgswCt::encrypt_poly(&sk, &sk_poly);
@@ -231,8 +201,9 @@ mod tests {
         let b = Plaintext {
             params: params.clone(),
             values: vec![1].to_vec().into_boxed_slice(),
+            level: 0,
         };
-        let b_ksk = Ksk::new_with_pt(&sk, &b);
+        let b_ksk = Ksk::new_with_pt(&sk, &b, 0, 0);
 
         let upper_half = izip!(b_ksk.c0.iter(), b_ksk.c1.iter())
             .map(|(c0, c1)| {
@@ -241,19 +212,21 @@ mod tests {
                     &BfvCipherText {
                         params: params.clone(),
                         cts: vec![c0.clone(), c1.clone()],
+                        level: 0,
                     },
                 )
             })
             .map(|(c0, c1)| BfvCipherText {
                 params: params.clone(),
                 cts: vec![c0, c1],
+                level: 0,
             })
             .collect_vec();
         let upper_half = Ksk::try_from_decomposed_rlwes(&params, &upper_half);
 
         let m_values =
             Modulus::new(params.plaintext_modulus_u64).random_vec(params.degree, &mut rng);
-        let mut m = Poly::try_from_vec_u64(&params.rq_context, &m_values);
+        let mut m = Poly::try_from_vec_u64(&ctx, &m_values);
         m.change_representation(Representation::Ntt);
         let m_ct = sk.encrypt_poly(&m);
         let b_rgsw_constructed = RgswCt::try_from_ksks(&upper_half, &b_ksk);
@@ -261,6 +234,7 @@ mod tests {
         let product = sk.decrypt(&BfvCipherText {
             params: params.clone(),
             cts: vec![product.0.clone(), product.1.clone()],
+            level: 0,
         });
         dbg!(product.values, m_values);
         dbg!(sk.measure_noise(&m_ct));
@@ -275,14 +249,15 @@ mod tests {
             BitDecomposition { base: 4, l: 8 },
         ));
         let sk = SecretKey::generate(&params);
-        let sk_poly = Poly::try_from_vec_i64(&params.rq_context, &sk.coeffs);
+        let ctx = params.q_ctxs[0].clone();
+        let sk_poly = Poly::try_from_vec_i64(&ctx, &sk.coeffs);
 
         // let m = BfvPlaintext::new(&params, &vec![2]);
         // let rgsw_ct = RgswCt::encrypt(&sk, &m);
-        let mut m = &Plaintext::new(&params, &vec![2]);
+        let mut m = &Plaintext::new(&params, &vec![2], 0);
         let rgsw_ct = RgswCt::encrypt(&sk, m);
 
-        let ksk1 = Ksk::new_with_pt(&sk, &Plaintext::new(&params, &vec![2]));
+        let ksk1 = Ksk::new_with_pt(&sk, &Plaintext::new(&params, &vec![2], 0), 0, 0);
 
         // construct ksk2 from ksk1 using rgsw
         let ksk2 = izip!(ksk1.c0.iter(), ksk1.c1.iter()).map(|(c0, c1)| {
@@ -291,30 +266,26 @@ mod tests {
                 &BfvCipherText {
                     params: params.clone(),
                     cts: vec![c0.clone(), c1.clone()],
+                    level: 0,
                 },
             )
         });
 
-        let ksk2_s = izip!(ksk1.c0.iter(), ksk1.c1.iter()).map(|(c0, c1)| {
-            let f = &BfvCipherText {
-                params: params.clone(),
-                cts: vec![c0.clone(), c1.clone()],
-            } * &sk_poly;
-            RgswCt::external_product(&rgsw_ct, &f)
-        });
         let ksk2 = Ksk {
             params: params.clone(),
             c0: ksk2.clone().map(|(c0, _)| c0).collect(),
             c1: ksk2.map(|(_, c1)| c1).collect(),
-            ct_context: params.rq_context.clone(),
+            ksk_context: ctx.clone(),
+            ct_context: ctx.clone(),
         };
 
-        let p1 = Poly::try_from_vec_u64(&params.rq_context, &vec![3]);
+        let p1 = Poly::try_from_vec_u64(&ctx, &vec![3]);
         let product = ksk2.key_switch(&p1);
 
         dbg!(sk.decrypt(&BfvCipherText {
             params: params.clone(),
-            cts: vec![product.0, product.1]
+            cts: vec![product.0, product.1],
+            level: 0
         }));
     }
 
@@ -329,11 +300,11 @@ mod tests {
             ));
             let sk = SecretKey::generate(&params);
 
-            let v1 = params.plaintext_modulus.random_vec(params.degree, &mut rng);
-            let v2 = params.plaintext_modulus.random_vec(params.degree, &mut rng);
+            let v1 = Modulus::new(params.plaintext_modulus_u64).random_vec(params.degree, &mut rng);
+            let v2 = Modulus::new(params.plaintext_modulus_u64).random_vec(params.degree, &mut rng);
 
-            let bfv_ct = sk.encrypt(&Plaintext::new(&params, &v1));
-            let mut m2_poly = Poly::try_from_vec_u64(&params.rq_context, &v2);
+            let bfv_ct = sk.encrypt(&Plaintext::new(&params, &v1, 0));
+            let mut m2_poly = Poly::try_from_vec_u64(&params.q_ctxs[0], &v2);
             m2_poly.change_representation(Representation::Ntt);
             let rgsw_ct = RgswCt::encrypt_poly(&sk, &m2_poly);
 
@@ -341,10 +312,11 @@ mod tests {
             let product = sk.decrypt(&BfvCipherText {
                 cts: vec![ec0, ec1],
                 params: params.clone(),
+                level: 0,
             });
 
             let rp = Arc::new(RqContext::new(
-                vec![params.plaintext_modulus.p],
+                vec![params.plaintext_modulus_u64],
                 params.degree,
                 BitDecomposition { base: 4, l: 8 },
             ));
@@ -356,8 +328,7 @@ mod tests {
             let mut expected_product = &v1_poly * &v2_poly;
             expected_product.change_representation(Representation::PowerBasis);
             let coeffs = expected_product.coefficients();
-            let values = params
-                .plaintext_modulus
+            let values = Modulus::new(params.plaintext_modulus_u64)
                 .reduce_vec_u64(coeffs.as_slice().unwrap());
             assert_eq!(product.values, values.into());
         }

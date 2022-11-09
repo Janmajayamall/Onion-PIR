@@ -25,7 +25,7 @@ pub struct BfvParameters {
     pub degree: usize,
 
     pub plaintext_modulus_u64: u64,
-    pub plaintext_modulus: Modulus,
+    pub pt_ctx: Arc<RqContext>,
 
     pub ciphertext_moduli: Vec<u64>,
 
@@ -85,16 +85,17 @@ impl BfvParameters {
         ));
         for i in 0..ciphertext_moduli.len() {
             let moduli = ciphertext_moduli[..(ciphertext_moduli.len() - i)].to_vec();
-            let q_ctx_i = Arc::new(RqContext::new(moduli, degree, bit_decomp.clone()));
+            let q_ctx_i = Arc::new(RqContext::new(moduli.clone(), degree, bit_decomp.clone()));
             let qi_mod_t_i = (q_ctx_i.rns.modulus() % plaintext_modulus_u64)
                 .to_u64()
                 .unwrap();
-            q_ctxs.push(q_ctx_i);
+            q_ctxs.push(q_ctx_i.clone());
             q_mod_ts.push(qi_mod_t_i);
 
             // (-t)^-1
-            let t_inv_poly =
+            let mut t_inv_poly =
                 Poly::try_from_bigint(&q_ctx_i, &[q_ctx_i.rns.lift((&t_invs_rests).into())]);
+            t_inv_poly.change_representation(Representation::Ntt);
             t_inv_polys.push(t_inv_poly);
 
             // scaler
@@ -137,7 +138,7 @@ impl BfvParameters {
         Self {
             degree,
             plaintext_modulus_u64,
-            plaintext_modulus: Modulus::new(plaintext_modulus_u64),
+            pt_ctx,
 
             ciphertext_moduli,
 
@@ -150,6 +151,15 @@ impl BfvParameters {
 
             variance,
         }
+    }
+
+    pub fn ctx_level(&self, of_ctx: &Arc<RqContext>) -> Option<usize> {
+        for i in 0..(self.q_ctxs.len()) {
+            if *of_ctx == self.q_ctxs[i] {
+                return Some(i);
+            }
+        }
+        None
     }
 
     pub fn default(
@@ -189,7 +199,7 @@ impl BfvParameters {
 }
 
 #[derive(PartialEq)]
-struct MultiplicationParameters {
+pub struct MultiplicationParameters {
     from: Arc<RqContext>,
     to: Arc<RqContext>,
     up_scaler: RqScaler,
@@ -216,7 +226,6 @@ impl Debug for BfvParameters {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("BfvParameters")
             .field("polynomial_degree", &self.degree)
-            .field("plaintext_modulus", &self.plaintext_modulus)
             .field("moduli", &self.ciphertext_moduli)
             // .field("moduli_sizes", &self.moduli_sizes)
             // .field("variance", &self.variance)
@@ -287,6 +296,7 @@ impl SecretKey {
         BfvCipherText {
             cts: vec![b, a],
             params: self.params.clone(),
+            level: 0, // FIXME: change this
         }
     }
 
@@ -296,7 +306,8 @@ impl SecretKey {
     }
 
     pub fn decrypt_trial(&self, ct0: &Poly, ct1: &Poly) -> Poly {
-        let mut sk = Poly::try_from_vec_i64(&self.params.rq_context, &self.coeffs);
+        assert_eq!(ct0.context, ct1.context);
+        let mut sk = Poly::try_from_vec_i64(&ct0.context, &self.coeffs);
         sk.change_representation(Representation::Ntt);
 
         let mut v = &sk * ct1;
@@ -322,21 +333,22 @@ impl SecretKey {
         // its rq context from `R_q` to `R_q{i}`. `R_q{i}`
         // is any of ct moduli.
         // i.e. [(t/q)* m ]_r where `r` is one of the `qi`s.
-        m = self.params.scalar.scale(&m);
+        m = self.params.scalars[ct.level].scale(&m);
         let mut m: Vec<u64> = m
             .coefficients()
             .index_axis(Axis(0), 0)
             .iter()
-            .map(|a| *a + self.params.plaintext_modulus.p)
+            .map(|a| *a + self.params.plaintext_modulus_u64)
             .collect();
         m = m[..self.params.degree].to_vec();
-        let q = Modulus::new(self.params.ciphertext_moduli[0]);
+        let q = self.params.q_ctxs[ct.level].moduli[0].clone();
         m = q.reduce_vec_u64(&m);
-        m = self.params.plaintext_modulus.reduce_vec_u64(&m);
+        m = Modulus::new(self.params.plaintext_modulus_u64).reduce_vec_u64(&m);
 
         Plaintext {
             params: self.params.clone(),
             values: m.into_boxed_slice(),
+            level: ct.level,
         }
     }
 
@@ -345,8 +357,9 @@ impl SecretKey {
     pub fn measure_noise(&self, ct: &BfvCipherText) -> usize {
         let pt = self.decrypt(ct);
         let ideal_m = pt.to_poly();
+        let ctx = self.params.q_ctxs[ct.level].clone();
 
-        let mut sk = Poly::try_from_vec_i64(&self.params.rq_context, &self.coeffs);
+        let mut sk = Poly::try_from_vec_i64(&ctx, &self.coeffs);
         sk.change_representation(Representation::Ntt);
         let mut m = &ct.cts[1] * &sk;
         m += &ct.cts[0];
@@ -355,7 +368,7 @@ impl SecretKey {
         m.change_representation(Representation::PowerBasis);
 
         let mut noise = 0usize;
-        let ct_moduli = &self.params.rq_context.rns.product.clone();
+        let ct_moduli = &ctx.rns.product.clone();
 
         Vec::<BigUint>::from(&m).iter().for_each(|coeff| {
             noise = std::cmp::max(
@@ -376,12 +389,14 @@ pub struct BfvCiphertext {
 pub struct BfvCipherText {
     pub params: Arc<BfvParameters>,
     pub cts: Vec<Poly>,
+    pub level: usize,
 }
 
 impl Add<&BfvCipherText> for &BfvCipherText {
     type Output = BfvCipherText;
     fn add(self, rhs: &BfvCipherText) -> Self::Output {
         assert!(self.params == rhs.params);
+        assert!(self.level == rhs.level);
 
         let c0 = &self.cts[0] + &rhs.cts[0];
         let c1 = &self.cts[1] + &rhs.cts[1];
@@ -389,6 +404,7 @@ impl Add<&BfvCipherText> for &BfvCipherText {
         BfvCipherText {
             params: self.params.clone(),
             cts: vec![c0, c1],
+            level: self.level,
         }
     }
 }
@@ -396,7 +412,7 @@ impl Add<&BfvCipherText> for &BfvCipherText {
 impl Add<&Poly> for &BfvCipherText {
     type Output = BfvCipherText;
     fn add(self, rhs: &Poly) -> Self::Output {
-        assert!(self.params.rq_context == rhs.context);
+        assert!(self.cts[0].context == rhs.context);
 
         let c0 = &self.cts[0] + rhs;
         let c1 = &self.cts[1] + rhs;
@@ -404,6 +420,7 @@ impl Add<&Poly> for &BfvCipherText {
         BfvCipherText {
             params: self.params.clone(),
             cts: vec![c0, c1],
+            level: self.level,
         }
     }
 }
@@ -412,6 +429,7 @@ impl Sub<&BfvCipherText> for &BfvCipherText {
     type Output = BfvCipherText;
     fn sub(self, rhs: &BfvCipherText) -> Self::Output {
         assert!(self.params == rhs.params);
+        assert!(self.level == rhs.level);
 
         let c0 = &self.cts[0] - &rhs.cts[0];
         let c1 = &self.cts[1] - &rhs.cts[1];
@@ -419,6 +437,7 @@ impl Sub<&BfvCipherText> for &BfvCipherText {
         BfvCipherText {
             params: self.params.clone(),
             cts: vec![c0, c1],
+            level: self.level,
         }
     }
 }
@@ -426,10 +445,10 @@ impl Sub<&BfvCipherText> for &BfvCipherText {
 impl Mul<&Plaintext> for &BfvCipherText {
     type Output = BfvCipherText;
     fn mul(self, rhs: &Plaintext) -> Self::Output {
-        assert!(rhs.params == self.params);
+        assert!(self.level == rhs.level);
 
         // TODO: store this in BfvPlaintext
-        let mut pt_poly = Poly::try_from_vec_u64(&self.params.rq_context, &rhs.values);
+        let mut pt_poly = Poly::try_from_vec_u64(&self.params.q_ctxs[self.level], &rhs.values);
         pt_poly.change_representation(Representation::Ntt);
 
         let c0 = &self.cts[0] * &pt_poly;
@@ -438,6 +457,7 @@ impl Mul<&Plaintext> for &BfvCipherText {
         BfvCipherText {
             params: self.params.clone(),
             cts: vec![c0, c1],
+            level: self.level,
         }
     }
 }
@@ -445,7 +465,7 @@ impl Mul<&Plaintext> for &BfvCipherText {
 impl Mul<&Poly> for &BfvCipherText {
     type Output = BfvCipherText;
     fn mul(self, rhs: &Poly) -> Self::Output {
-        assert!(rhs.context == self.params.rq_context);
+        assert!(rhs.context == self.cts[0].context);
         assert!(rhs.representation == Representation::Ntt);
 
         let c0 = &self.cts[0] * rhs;
@@ -454,6 +474,7 @@ impl Mul<&Poly> for &BfvCipherText {
         BfvCipherText {
             params: self.params.clone(),
             cts: vec![c0, c1],
+            level: self.level,
         }
     }
 }
@@ -467,6 +488,7 @@ impl Mul<&BigUint> for &BfvCipherText {
         BfvCipherText {
             params: self.params.clone(),
             cts: vec![c0, c1],
+            level: self.level,
         }
     }
 }
@@ -475,25 +497,29 @@ impl Mul<&BigUint> for &BfvCipherText {
 pub struct Plaintext {
     pub params: Arc<BfvParameters>,
     pub values: Box<[u64]>,
+    pub level: usize,
 }
 
 impl Plaintext {
-    pub fn new(params: &Arc<BfvParameters>, values: &Vec<u64>) -> Self {
+    pub fn new(params: &Arc<BfvParameters>, values: &Vec<u64>, level: usize) -> Self {
         assert!(values.len() <= params.degree);
         Self {
             params: params.clone(),
             values: values.clone().into_boxed_slice(),
+            level,
         }
     }
 
     pub fn to_poly(&self) -> Poly {
-        // scale m values by q
-        let values = self
-            .params
-            .plaintext_modulus
-            .scalar_mul_vec(&self.values, self.params.q_mod_t);
+        let q_mod_t = self.params.q_mod_ts[self.level];
+        let q_ctx = self.params.q_ctxs[self.level].clone();
+        let delta = self.params.delta_ts[self.level].clone();
 
-        let mut poly = Poly::try_from_vec_u64(&self.params.rq_context, &values);
+        // scale m values by q
+        let values =
+            Modulus::new(self.params.plaintext_modulus_u64).scalar_mul_vec(&self.values, q_mod_t);
+
+        let mut poly = Poly::try_from_vec_u64(&q_ctx, &values);
         poly.change_representation(Representation::Ntt);
 
         // Multiply poly by delta
@@ -501,7 +527,7 @@ impl Plaintext {
         // so `delta * poly` results into a poly with
         // coefficients scaled by delta. Thus producing
         // scaled plaintext ((q * t)*m) in rq.
-        poly *= &self.params.delta;
+        poly *= &delta;
 
         poly
     }
@@ -513,27 +539,30 @@ impl Plaintext {
 pub struct GaliosKey {
     gk: Ksk,
     substitution: Substitution,
+    galios_level: usize,
 }
 
 impl GaliosKey {
-    pub fn new(sk: &SecretKey, i: &Substitution) -> Self {
-        // TODO: Q. why is this the case ?
+    pub fn new(sk: &SecretKey, i: &Substitution, galios_level: usize) -> Self {
         assert!(sk.params.ciphertext_moduli.len() != 1);
 
-        let mut sk_poly = Poly::try_from_vec_i64(&sk.params.rq_context, &sk.coeffs);
+        let ctx = sk.params.q_ctxs[galios_level].clone();
+
+        let mut sk_poly = Poly::try_from_vec_i64(&ctx, &sk.coeffs);
         let mut sk_i_poly = sk_poly.substitute(i);
         sk_i_poly.change_representation(Representation::Ntt);
 
-        let gk = Ksk::new(sk, &sk_i_poly);
+        let gk = Ksk::new(sk, &sk_i_poly, galios_level, galios_level);
 
         GaliosKey {
             gk,
             substitution: i.clone(),
+            galios_level,
         }
     }
 
     pub fn relinearize(&self, ct: &BfvCipherText) -> BfvCipherText {
-        assert!(self.gk.params.rq_context == ct.cts[0].context);
+        assert!(ct.level == self.galios_level);
 
         debug_assert!(ct.cts[0].representation == Representation::Ntt);
 
@@ -545,12 +574,15 @@ impl GaliosKey {
         BfvCipherText {
             params: ct.params.clone(),
             cts: vec![c0, c1],
+            level: self.galios_level,
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use sha2::digest::typenum::Mod;
+
     use super::*;
 
     #[test]
@@ -566,10 +598,10 @@ mod tests {
             let sk = SecretKey::generate(&params);
             let pt = Plaintext {
                 params: params.clone(),
-                values: params
-                    .plaintext_modulus
+                values: Modulus::new(params.plaintext_modulus_u64)
                     .random_vec(params.degree, &mut rng)
                     .into_boxed_slice(),
+                level: 0,
             };
             let ct = sk.encrypt(&pt);
             let pt_after = sk.decrypt(&ct);
@@ -590,10 +622,10 @@ mod tests {
             let sk = SecretKey::generate(&params);
 
             let subs = Substitution::new(3);
-            let gk = GaliosKey::new(&sk, &subs);
+            let gk = GaliosKey::new(&sk, &subs, 0);
 
-            let v = params.plaintext_modulus.random_vec(params.degree, &mut rng);
-            let pt = Plaintext::new(&params, &v);
+            let v = Modulus::new(params.plaintext_modulus_u64).random_vec(params.degree, &mut rng);
+            let pt = Plaintext::new(&params, &v, 0);
             let ct = sk.encrypt(&pt);
 
             let ct2 = gk.relinearize(&ct);

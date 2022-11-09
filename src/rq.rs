@@ -655,7 +655,7 @@ mod tests {
                 8,
                 BitDecomposition { base: 4, l: 8 },
             ));
-            let rq = params.rq_context.clone();
+            let rq = params.q_ctxs[0].clone();
             let mut rng = thread_rng();
 
             let mut p = Poly::random(&rq, &mut rng, Representation::PowerBasis);

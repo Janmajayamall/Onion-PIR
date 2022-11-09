@@ -11,7 +11,6 @@ use ndarray::Array2;
 use num_bigint::BigUint;
 use num_bigint_dig::{BigUint as BigUintDig, ModInverse};
 use num_traits::{FromPrimitive, One, ToPrimitive, Zero};
-use sha2::digest::typenum::bit;
 use std::{collections::HashMap, default::Default, sync::Arc, vec};
 
 struct Client {
@@ -79,7 +78,7 @@ impl Server {
         let db_scaled = db
             .iter()
             .map(|p| {
-                let mut pt = Poly::try_from_vec_u64(&params.rq_context, &p.values);
+                let mut pt = Poly::try_from_vec_u64(&params.q_ctxs[0], &p.values);
                 pt.change_representation(Representation::Ntt);
                 pt
             })
@@ -112,7 +111,7 @@ impl Server {
         eval_key: &Evaluation,
         params: &Arc<BfvParameters>,
     ) -> Vec<BfvCipherText> {
-        assert!(params.rq_context.moduli.len() + 1 == query_cts.len());
+        assert!(params.q_ctxs[0].moduli.len() + 1 == query_cts.len());
 
         let mut first_dim_cts = eval_key.unpack(query_cts[0].clone());
         first_dim_cts = first_dim_cts.as_slice()[..self.first_dim].to_vec();
@@ -138,6 +137,7 @@ impl Server {
                     BfvCipherText {
                         params: params.clone(),
                         cts: vec![c0, c1],
+                        level: 0,
                     }
                 })
                 .collect();
@@ -167,6 +167,7 @@ impl Server {
                 let mut sum = BfvCipherText {
                     params: params.clone(),
                     cts: vec![],
+                    level: 0,
                 };
                 rows.enumerate().for_each(|(index, product)| {
                     if index == 0 {
@@ -199,11 +200,13 @@ impl Server {
                                 BfvCipherText {
                                     params: params.clone(),
                                     cts: vec![c0, c1],
+                                    level: 0,
                                 }
                             });
                         let mut sum = BfvCipherText {
                             params: params.clone(),
                             cts: vec![],
+                            level: 0,
                         };
                         new_chunk_cts.enumerate().for_each(|(index, product)| {
                             if index == 0 {
@@ -233,11 +236,11 @@ impl Evaluation {
         let n = params.degree;
         for i in 0..ilog2(n) {
             let k = (n / 2usize.pow(i as u32)) + 1;
-            let gk_i = GaliosKey::new(sk, &Substitution::new(k));
+            let gk_i = GaliosKey::new(sk, &Substitution::new(k), 0);
             gk_map.insert(k, gk_i);
         }
 
-        let mut m = Poly::try_from_vec_i64(&sk.params.rq_context, &sk.coeffs);
+        let mut m = Poly::try_from_vec_i64(&params.q_ctxs[0], &sk.coeffs);
         m.change_representation(Representation::Ntt);
         let sk_rgsw = RgswCt::encrypt_poly(sk, &m);
 
@@ -248,7 +251,7 @@ impl Evaluation {
     }
 
     pub fn unpack(&self, mut ct: BfvCipherText) -> Vec<BfvCipherText> {
-        let x_pows = Evaluation::gen_x_pows(ct.params.degree, &ct.params.rq_context);
+        let x_pows = Evaluation::gen_x_pows(ct.params.degree, &ct.params.q_ctxs[ct.level]);
         debug_assert!(x_pows.len() == ilog2(ct.params.degree));
 
         let n = ct.params.degree;
@@ -256,7 +259,7 @@ impl Evaluation {
         // multiply ct by N^-1
         let n_biguint = BigUintDig::from_usize(n).unwrap();
         let n_inv = n_biguint
-            .mod_inverse(ct.params.rq_context.rns.product_dig.clone())
+            .mod_inverse(ct.params.q_ctxs[ct.level].rns.product_dig.clone())
             .unwrap()
             .to_biguint()
             .unwrap()
@@ -317,6 +320,7 @@ mod tests {
         rq::{BitDecomposition, Representation},
         utils::generate_prime,
     };
+    use crypto_bigint::rand_core::le;
     use ndarray::Axis;
     use num_bigint::BigUint;
     use num_traits::FromPrimitive;
@@ -334,18 +338,14 @@ mod tests {
             degree, pt_moduli, ct_moduli, 10, bit_decomp,
         ));
         let sk = SecretKey::generate(&params);
-        let mut sk_poly = Poly::try_from_vec_i64(&params.rq_context, &sk.coeffs);
+        let ctx = params.q_ctxs[0].clone();
+        let mut sk_poly = Poly::try_from_vec_i64(&ctx, &sk.coeffs);
         sk_poly.change_representation(Representation::Ntt);
 
         let query = vec![1u64, 0, 1, 0];
-        let mut query_poly = Poly::try_from_vec_u64(&params.rq_context, &query);
+        let mut query_poly = Poly::try_from_vec_u64(&ctx, &query);
         query_poly.change_representation(Representation::Ntt);
-        let decomp_query_polys = params
-            .rq_context
-            .rns
-            .garner
-            .iter()
-            .map(|gi| &query_poly * gi);
+        let decomp_query_polys = ctx.rns.garner.iter().map(|gi| &query_poly * gi);
 
         let evaluation_key = Evaluation::build(&sk, &params);
 
@@ -356,8 +356,7 @@ mod tests {
             .collect_vec();
 
         // lower half
-        let lower_half = params
-            .rq_context
+        let lower_half = ctx
             .rns
             .garner
             .iter()
@@ -372,6 +371,7 @@ mod tests {
                 BfvCipherText {
                     params: params.clone(),
                     cts: vec![c0, c1],
+                    level: 0,
                 }
             })
             .collect();
@@ -381,13 +381,14 @@ mod tests {
 
         let rgsw = RgswCt::try_from_ksks(&upper_half, &lower_half);
 
-        let mut p_1 = Poly::try_from_vec_u64(&params.rq_context, &[1]);
+        let mut p_1 = Poly::try_from_vec_u64(&ctx, &[1]);
         p_1.change_representation(Representation::Ntt);
         let rgsw_ideal = RgswCt::encrypt_poly(&sk, &p_1);
 
         let ct1 = sk.encrypt(&Plaintext::new(
             &params,
-            &params.plaintext_modulus.random_vec(degree, &mut rng),
+            &Modulus::new(params.plaintext_modulus_u64).random_vec(degree, &mut rng),
+            0,
         ));
 
         let product = RgswCt::external_product(&rgsw, &ct1);
@@ -397,11 +398,13 @@ mod tests {
             sk.decrypt(&BfvCipherText {
                 params: params.clone(),
                 cts: vec![product.0.clone(), product.1.clone()],
+                level: 0
             })
             .values,
             sk.decrypt(&BfvCipherText {
                 params: params.clone(),
                 cts: vec![product_ideal.0.clone(), product_ideal.1.clone()],
+                level: 0
             })
             .values
         );
@@ -427,7 +430,7 @@ mod tests {
         // Pre-processing
         let db: Vec<Plaintext> = (0..16)
             .into_iter()
-            .map(|i| Plaintext::new(&params, &vec![i, i, i, i]))
+            .map(|i| Plaintext::new(&params, &vec![i, i, i, i], 0))
             .collect();
 
         // Client side
@@ -436,11 +439,11 @@ mod tests {
         let client = Client::new(4, 2);
         let query_encoded = client.encode(query, db.len(), &params, &sk);
         dbg!(&query_encoded);
-        let query_first_dim = Plaintext::new(&params, &query_encoded);
+        let query_first_dim = Plaintext::new(&params, &query_encoded, 0);
         let query_first_dim = sk.encrypt(&query_first_dim);
         let mut query_cts = vec![query_first_dim];
-        params.rq_context.rns.garner.iter().for_each(|gi| {
-            let mut p = Poly::try_from_vec_u64(&params.rq_context, &query_encoded.as_slice()[4..]);
+        params.q_ctxs[0].rns.garner.iter().for_each(|gi| {
+            let mut p = Poly::try_from_vec_u64(&params.q_ctxs[0], &query_encoded.as_slice()[4..]);
             p.change_representation(Representation::Ntt);
             p *= gi;
             let ct = sk.encrypt_poly(&p);
@@ -480,7 +483,7 @@ mod tests {
         let sk = SecretKey::generate(&params);
         let evaluation = Evaluation::build(&sk, &params);
 
-        let pt = Plaintext::new(&params, &query);
+        let pt = Plaintext::new(&params, &query, 0);
         let ct = sk.encrypt(&pt);
 
         let cts = evaluation.unpack(ct);
@@ -503,6 +506,7 @@ mod tests {
         let params = Arc::new(BfvParameters::new(
             degree, pt_moduli, ct_moduli, 10, bit_decomp,
         ));
+        let ctx = params.q_ctxs[0].clone();
 
         let sk = SecretKey::generate(&params);
 
@@ -516,7 +520,7 @@ mod tests {
             .collect_vec();
         let values0 = rng.sample_iter(binary_dist).take(degree).collect_vec();
         let g0 = BigUint::from(5usize);
-        let mut p1 = Poly::try_from_vec_u64(&params.rq_context, &values);
+        let mut p1 = Poly::try_from_vec_u64(&ctx, &values);
         p1.change_representation(Representation::Ntt);
         p1 *= &g0;
 
@@ -524,7 +528,7 @@ mod tests {
 
         let unpacked_cts = evaluation.unpack(ct);
         izip!(unpacked_cts.iter(), values0.iter()).for_each(|(ct, v)| {
-            let mut ex_p = Poly::try_from_vec_u64(&params.rq_context, &[*v]);
+            let mut ex_p = Poly::try_from_vec_u64(&ctx, &[*v]);
             ex_p.change_representation(Representation::Ntt);
             ex_p *= &g0;
 
@@ -533,7 +537,7 @@ mod tests {
             let mut diff = &p - &ex_p;
             diff.change_representation(Representation::Ntt);
 
-            let modulus = params.rq_context.rns.product.clone();
+            let modulus = &ctx.rns.product.clone();
 
             Vec::<BigUint>::from(&diff).iter().for_each(|coeff| {
                 dbg!(std::cmp::min(coeff.bits(), modulus.bits() - coeff.bits()));
@@ -558,7 +562,7 @@ mod tests {
 
         let binary_dist = Uniform::from(0..100);
         let values = rng.sample_iter(binary_dist).take(degree).collect_vec();
-        let ct = sk.encrypt(&Plaintext::new(&params, &values));
+        let ct = sk.encrypt(&Plaintext::new(&params, &values, 0));
 
         let unpacked_cts = evaluation.unpack(ct);
 
