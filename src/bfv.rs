@@ -1,16 +1,19 @@
 use crate::ksk::Ksk;
 use crate::rns::ScalingFactor;
 use crate::rq::{BitDecomposition, Poly, Representation, RqContext, RqScaler, Substitution};
+use crate::utils::div_ceil;
 use crate::{
     modulus::Modulus,
     utils::{generate_prime, sample_vec_cbd},
 };
+
+use itertools::Itertools;
 use ndarray::Axis;
 use num_bigint::BigUint;
-use num_traits::{FromPrimitive, ToPrimitive};
+use num_traits::{FromPrimitive, One, ToPrimitive};
 use rand::{thread_rng, Rng, SeedableRng};
 use rand_chacha::ChaCha8Rng;
-use sha2::digest::typenum::bit;
+
 use std::{
     fmt::Debug,
     ops::{Add, Mul, Sub},
@@ -23,15 +26,16 @@ pub struct BfvParameters {
 
     pub plaintext_modulus_u64: u64,
     pub plaintext_modulus: Modulus,
-    pub plaintext_context: Arc<RqContext>,
 
     pub ciphertext_moduli: Vec<u64>,
-    pub rq_context: Arc<RqContext>,
-    pub scalar: RqScaler,
-    pub delta: Poly,
-    pub q_mod_t: u64,
 
-    /// Error variance
+    pub q_ctxs: Vec<Arc<RqContext>>,
+    pub e_ctxs: Vec<Arc<RqContext>>,
+    pub mul_params: Vec<MultiplicationParameters>,
+    pub delta_ts: Vec<Poly>,
+    pub q_mod_ts: Vec<u64>,
+    pub scalars: Vec<RqScaler>,
+
     pub variance: usize,
 }
 
@@ -43,56 +47,108 @@ impl BfvParameters {
         variance: usize,
         bit_decomp: BitDecomposition,
     ) -> Self {
-        let pt_context = Arc::new(RqContext::new(
+        // We need n+1 moduli of 62 bits for multiplication
+        let mut extended_basis_moduli = vec![];
+        let mut upper_bound = 1 << 62;
+        while extended_basis_moduli.len() != (ciphertext_moduli.len() + 1) {
+            upper_bound = generate_prime(62, (2 * degree) as u64, upper_bound).unwrap();
+            if !extended_basis_moduli.contains(&upper_bound)
+                && !ciphertext_moduli.contains(&upper_bound)
+            {
+                extended_basis_moduli.push(upper_bound);
+            }
+        }
+
+        let t_invs_rests = ciphertext_moduli
+            .iter()
+            .map(|q| {
+                let q = Modulus::new(*q);
+                q.inv(q.neg(plaintext_modulus_u64))
+            })
+            .collect_vec();
+
+        // Setting parameters for every level afforded
+        // by the parent modulus. This is needed so that
+        // plaintexts can be encoded at eny level during
+        // operations.
+        let mut q_ctxs = vec![];
+        let mut e_ctxs = vec![];
+        let mut mul_params = vec![];
+        let mut q_mod_ts = vec![];
+        let mut t_inv_polys = vec![];
+        let mut scalars = vec![];
+
+        let pt_ctx = Arc::new(RqContext::new(
             vec![ciphertext_moduli[0]],
             degree,
             bit_decomp.clone(),
         ));
-        let rq_context = Arc::new(RqContext::new(
-            ciphertext_moduli.clone(),
-            degree,
-            bit_decomp,
-        ));
+        for i in 0..ciphertext_moduli.len() {
+            let moduli = ciphertext_moduli[..(ciphertext_moduli.len() - i)].to_vec();
+            let q_ctx_i = Arc::new(RqContext::new(moduli, degree, bit_decomp.clone()));
+            let qi_mod_t_i = (q_ctx_i.rns.modulus() % plaintext_modulus_u64)
+                .to_u64()
+                .unwrap();
+            q_ctxs.push(q_ctx_i);
+            q_mod_ts.push(qi_mod_t_i);
 
-        // scaler for scaling down
-        // delta_m by (t/q) (i.e. from ct space to pt space)
-        let scalar = RqScaler::new(
-            &rq_context,
-            &pt_context,
-            ScalingFactor::new(
-                BigUint::from_u64(plaintext_modulus_u64).unwrap(),
-                rq_context.rns.product.clone(),
-            ),
-        );
+            // (-t)^-1
+            let t_inv_poly =
+                Poly::try_from_bigint(&q_ctx_i, &[q_ctx_i.rns.lift((&t_invs_rests).into())]);
+            t_inv_polys.push(t_inv_poly);
 
-        // delta = [-t^(-1)]_q
-        let delta_rests: Vec<u64> = ciphertext_moduli
-            .iter()
-            .map(|qi| {
-                let qi = Modulus::new(*qi);
-                qi.inv(qi.neg(plaintext_modulus_u64))
-            })
-            .collect();
+            // scaler
+            let scalar_i = RqScaler::new(
+                &q_ctx_i,
+                &pt_ctx,
+                ScalingFactor::new(
+                    BigUint::from_u64(plaintext_modulus_u64).unwrap(),
+                    q_ctx_i.rns.modulus().clone(),
+                ),
+            );
+            scalars.push(scalar_i);
 
-        let delta = rq_context.rns.lift((&delta_rests).into());
-        let mut delta = Poly::try_from_bigint(&rq_context, &[delta]);
-        delta.change_representation(Representation::Ntt);
-
-        let q_mod_t = (rq_context.rns.product.clone() % plaintext_modulus_u64)
-            .to_u64()
-            .unwrap();
+            // parameters for multiplication
+            let moduli_size_sum: usize = moduli
+                .iter()
+                .map(|q| 64 - (q.leading_zeros()) as usize)
+                .sum();
+            // extended basis requires: `moduli size` + 60 bits
+            let extended_basis_count = div_ceil(moduli_size_sum + 60, 62);
+            // this is needed for layer 1 multiplication
+            let extended_basis_i = extended_basis_moduli[..extended_basis_count].to_vec();
+            let e_ctx_i = Arc::new(RqContext::new(extended_basis_i, degree, bit_decomp.clone()));
+            let mul_i = MultiplicationParameters::new(
+                &q_ctx_i,
+                &e_ctx_i,
+                ScalingFactor::new(BigUint::one(), BigUint::one()),
+                // Going from PQ to Q, we need to scale down
+                // ct by t/Q since after multiplication ct contains
+                // delta^2.
+                ScalingFactor::new(
+                    BigUint::from_u64(plaintext_modulus_u64).unwrap(),
+                    q_ctx_i.rns.modulus().clone(),
+                ),
+            );
+            e_ctxs.push(e_ctx_i);
+            mul_params.push(mul_i);
+        }
 
         Self {
             degree,
             plaintext_modulus_u64,
             plaintext_modulus: Modulus::new(plaintext_modulus_u64),
-            plaintext_context: pt_context,
+
             ciphertext_moduli,
-            rq_context,
-            scalar,
+
+            q_ctxs,
+            e_ctxs,
+            q_mod_ts,
+            scalars,
+            delta_ts: t_inv_polys,
+            mul_params,
+
             variance,
-            delta,
-            q_mod_t,
         }
     }
 
@@ -129,6 +185,30 @@ impl BfvParameters {
         }
 
         Some(moduli)
+    }
+}
+
+#[derive(PartialEq)]
+struct MultiplicationParameters {
+    from: Arc<RqContext>,
+    to: Arc<RqContext>,
+    up_scaler: RqScaler,
+    down_scalar: RqScaler,
+}
+
+impl MultiplicationParameters {
+    pub fn new(
+        from: &Arc<RqContext>,
+        to: &Arc<RqContext>,
+        up_factor: ScalingFactor,
+        down_factor: ScalingFactor,
+    ) -> Self {
+        Self {
+            from: from.clone(),
+            to: to.clone(),
+            up_scaler: RqScaler::new(from, to, up_factor),
+            down_scalar: RqScaler::new(from, to, down_factor),
+        }
     }
 }
 
