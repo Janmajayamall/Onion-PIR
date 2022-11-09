@@ -198,7 +198,7 @@ impl BfvParameters {
     }
 }
 
-#[derive(PartialEq)]
+#[derive(PartialEq, Clone)]
 pub struct MultiplicationParameters {
     from: Arc<RqContext>,
     to: Arc<RqContext>,
@@ -320,13 +320,13 @@ impl SecretKey {
         let mut sk = Poly::try_from_vec_i64(&ct.cts[0].context, &self.coeffs);
         sk.change_representation(Representation::Ntt);
 
-        // c[0] = b = -(a * sk) + e + delta_m
-        // c[1] = a
-        // e + delta_m = c[0] + c[1]sk
         let mut m = ct.cts[0].clone();
-        // sk * c[1]
-        sk *= &ct.cts[1];
-        m += &sk;
+        let mut sk_i = sk.clone();
+        for i in (1..ct.cts.len()) {
+            m += &(&sk_i * &ct.cts[i]);
+            sk_i *= &sk;
+        }
+
         m.change_representation(Representation::PowerBasis);
 
         // We scale `m` by (t/q) scaling factor and switch
@@ -437,6 +437,48 @@ impl Sub<&BfvCipherText> for &BfvCipherText {
         BfvCipherText {
             params: self.params.clone(),
             cts: vec![c0, c1],
+            level: self.level,
+        }
+    }
+}
+
+impl Mul<&BfvCipherText> for &BfvCipherText {
+    type Output = BfvCipherText;
+
+    fn mul(self, rhs: &BfvCipherText) -> Self::Output {
+        assert!(rhs.level == self.level);
+
+        let mul_params = self.params.mul_params[self.level].clone();
+
+        let self_scaled = self
+            .cts
+            .iter()
+            .map(|poly| mul_params.up_scaler.scale(&poly))
+            .collect_vec();
+        let other_scaled = rhs
+            .cts
+            .iter()
+            .map(|poly| mul_params.up_scaler.scale(&poly))
+            .collect_vec();
+
+        let mut cs = vec![
+            Poly::zero(&mul_params.to, Representation::Ntt);
+            (self.cts.len() + rhs.cts.len() - 1)
+        ];
+        for i in 0..self.cts.len() {
+            for j in 0..rhs.cts.len() {
+                cs[i + j] = &self_scaled[i] * &other_scaled[j];
+            }
+        }
+
+        cs = cs
+            .iter()
+            .map(|poly| mul_params.down_scalar.scale(poly))
+            .collect_vec();
+
+        BfvCipherText {
+            cts: cs,
+            params: self.params.clone(),
             level: self.level,
         }
     }
