@@ -83,8 +83,16 @@ impl RqScaler {
 
     /// Scale a polynomial
     pub(crate) fn scale(&self, p: &Poly) -> Poly {
-        assert!(p.context.as_ref() == self.from.as_ref());
-        assert!(p.representation == Representation::PowerBasis);
+        assert!(p.context == self.from);
+
+        // FIXME: replace this with actual NTT support
+        if p.representation != Representation::PowerBasis {
+            let mut tmp = p.clone();
+            tmp.change_representation(Representation::PowerBasis);
+            tmp = self.scale(&tmp);
+            tmp.change_representation(p.representation.clone());
+            return tmp;
+        }
 
         let mut representation = p.representation.clone();
         if representation == Representation::NttShoup {

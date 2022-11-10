@@ -109,15 +109,15 @@ impl BfvParameters {
             );
             scalars.push(scalar_i);
 
-            // parameters for multiplication
+            // parameters for multiplication layer 1 multiplication
             let moduli_size_sum: usize = moduli
                 .iter()
                 .map(|q| 64 - (q.leading_zeros()) as usize)
                 .sum();
-            // extended basis requires: `moduli size` + 60 bits
+            // extended basis requires: `2 * moduli size` + 60 bits
             let extended_basis_count = div_ceil(moduli_size_sum + 60, 62);
-            // this is needed for layer 1 multiplication
-            let extended_basis_i = extended_basis_moduli[..extended_basis_count].to_vec();
+            let mut extended_basis_i = moduli.clone();
+            extended_basis_i.extend(extended_basis_moduli[..extended_basis_count].iter());
             let e_ctx_i = Arc::new(RqContext::new(extended_basis_i, degree, bit_decomp.clone()));
             let mul_i = MultiplicationParameters::new(
                 &q_ctx_i,
@@ -217,7 +217,7 @@ impl MultiplicationParameters {
             from: from.clone(),
             to: to.clone(),
             up_scaler: RqScaler::new(from, to, up_factor),
-            down_scalar: RqScaler::new(from, to, down_factor),
+            down_scalar: RqScaler::new(to, from, down_factor),
         }
     }
 }
@@ -575,6 +575,46 @@ impl Plaintext {
     }
 }
 
+pub fn multiply_with_strategy(
+    lhs: &BfvCipherText,
+    rhs: &BfvCipherText,
+    rlk_key: &RelinearizationKey,
+) -> BfvCipherText {
+    assert!(lhs.level == rhs.level);
+    assert!(lhs.params == rhs.params);
+    assert!(lhs.params == rlk_key.params);
+
+    assert!(lhs.cts.len() == 2);
+    assert!(rhs.cts.len() == 2);
+
+    let mul_params = lhs.params.mul_params[lhs.level].clone();
+
+    let c0_0 = mul_params.up_scaler.scale(&lhs.cts[0]);
+    let c0_1 = mul_params.up_scaler.scale(&lhs.cts[1]);
+    let c1_0 = mul_params.up_scaler.scale(&rhs.cts[0]);
+    let c1_1 = mul_params.up_scaler.scale(&rhs.cts[1]);
+
+    let mut c_0 = &c0_0 * &c1_0;
+    let mut c_1 = &(&c0_0 * &c1_1) + &(&c1_0 * &c0_1);
+    let mut c_2 = &c0_1 * &c1_1;
+
+    let mut c = vec![c_0, c_1, c_2];
+    c.iter_mut()
+        .for_each(|p| *p = mul_params.down_scalar.scale(p));
+
+    // relinearize
+    let (cr_0, cr_1) = rlk_key.relinearize_poly(&c[2]);
+    c[0] += &cr_0;
+    c[1] += &cr_1;
+    c.pop();
+
+    BfvCipherText {
+        cts: c,
+        params: lhs.params.clone(),
+        level: lhs.level,
+    }
+}
+
 /// Special key that perform key switching operation
 /// from `s^i` to `s`, where `i` is the substitution
 /// exponent
@@ -621,6 +661,36 @@ impl GaliosKey {
     }
 }
 
+pub struct RelinearizationKey {
+    ksk: Ksk,
+    params: Arc<BfvParameters>,
+}
+
+impl RelinearizationKey {
+    pub fn new(sk: &SecretKey, level: usize) -> Self {
+        let ctx = sk.params.q_ctxs[level].clone();
+        let mut sk_poly = Poly::try_from_vec_i64(&ctx, &sk.coeffs);
+        sk_poly.change_representation(Representation::Ntt);
+        let s2 = &sk_poly * &sk_poly;
+        let ksk = Ksk::new(sk, &s2, level, level);
+
+        RelinearizationKey {
+            params: sk.params.clone(),
+            ksk,
+        }
+    }
+
+    pub fn relinearize_poly(&self, p: &Poly) -> (Poly, Poly) {
+        if (p.representation == Representation::Ntt) {
+            let mut tmp = p.clone();
+            tmp.change_representation(Representation::PowerBasis);
+            return self.ksk.key_switch(&tmp);
+        } else {
+            return self.ksk.key_switch(p);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use sha2::digest::typenum::Mod;
@@ -650,6 +720,33 @@ mod tests {
 
             assert_eq!(pt.values, pt_after.values);
         }
+    }
+
+    #[test]
+    fn mul_op() {
+        let rng = thread_rng();
+        let params = Arc::new(BfvParameters::default(
+            6,
+            8,
+            BitDecomposition { base: 4, l: 8 },
+        ));
+
+        let sk = SecretKey::generate(&params);
+
+        let p1 = vec![100];
+        let p2 = vec![200];
+
+        let ct1 = sk.encrypt(&Plaintext::new(&params, &p1, 0));
+        let ct2 = sk.encrypt(&Plaintext::new(&params, &p2, 0));
+
+        let rlk = RelinearizationKey::new(&sk, 0);
+
+        // let ct3 = &ct1 * &ct2;
+        let ct3 = multiply_with_strategy(&ct1, &ct2, &rlk);
+
+        let mul = sk.decrypt(&ct3);
+
+        dbg!(mul);
     }
 
     #[test]
