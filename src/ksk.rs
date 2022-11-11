@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use crate::{
-    bfv::{BfvCipherText, Plaintext},
+    bfv::{BfvCipherText, Encoding, Plaintext},
     modulus::Modulus,
     rq::Representation,
 };
@@ -188,7 +188,7 @@ mod tests {
             Poly::try_from_bigint(&params.q_ctxs[0], &[BigUint::from_usize(10000).unwrap()]);
         poly_g.change_representation(Representation::Ntt);
 
-        let mut one_enc = sk.encrypt(&Plaintext::new(&params, &vec![1], 0));
+        let mut one_enc = sk.encrypt(&Plaintext::new(&params, &vec![1], 0, Encoding::Poly));
         let one_g_enc = &one_enc * &poly_g;
 
         dbg!(sk.decrypt(&one_g_enc));
@@ -197,20 +197,16 @@ mod tests {
     #[test]
     fn ksk_with_pt() {
         let mut rng = thread_rng();
-        let degree = 8;
-        let ct_moduli = BfvParameters::generate_moduli(&[50, 55, 55], degree).unwrap();
-        let pt_moduli: u64 = (1 << 20) + (1 << 19) + (1 << 17) + (1 << 16) + (1 << 14) + 1;
-        let params = Arc::new(BfvParameters::new(
-            degree,
-            pt_moduli,
-            ct_moduli,
-            10,
+        let params = Arc::new(BfvParameters::default(
+            2,
+            8,
             BitDecomposition { base: 4, l: 8 },
         ));
+
         let sk = SecretKey::generate(&params);
         let sk_poly = Poly::try_from_vec_i64(&params.q_ctxs[0], &sk.coeffs);
 
-        let pt = Plaintext::new(&params, &vec![5], 0);
+        let pt = Plaintext::new(&params, &vec![5], 0, Encoding::Poly);
         let ksk = Ksk::new_with_pt(&sk, &pt, 0, 0);
 
         let mul_poly = Poly::try_from_vec_u64(&params.q_ctxs[0], &[34]);

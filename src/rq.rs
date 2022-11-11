@@ -671,8 +671,6 @@ mod tests {
             p.change_representation(Representation::Ntt);
             p.change_representation(Representation::PowerBasis);
 
-            p.apply_bit_decomposition();
-
             assert_eq!(p, q)
         }
     }

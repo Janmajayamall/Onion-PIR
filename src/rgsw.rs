@@ -5,7 +5,7 @@ use itertools::izip;
 use num_bigint::BigUint;
 use sha2::digest::typenum::private::IsLessPrivate;
 
-use super::bfv::BfvCipherText;
+use super::bfv::{BfvCipherText, Encoding};
 use crate::{
     bfv::{BfvParameters, Plaintext, SecretKey},
     ksk::Ksk,
@@ -126,7 +126,7 @@ mod tests {
         m.change_representation(Representation::Ntt);
         let sk_rgsw = RgswCt::encrypt_poly(&sk, &m);
 
-        let pt_one = Plaintext::new(&params, &vec![1u64], 0);
+        let pt_one = Plaintext::new(&params, &vec![1u64], 0, Encoding::Poly);
         let ex_rgsw = RgswCt::encrypt(&sk, &pt_one);
 
         let skis: Vec<BfvCipherText> = izip!(ex_rgsw.ksk1.c0.iter(), ex_rgsw.ksk1.c1.iter())
@@ -202,6 +202,7 @@ mod tests {
             params: params.clone(),
             values: vec![1].to_vec().into_boxed_slice(),
             level: 0,
+            encoding: Encoding::Poly,
         };
         let b_ksk = Ksk::new_with_pt(&sk, &b, 0, 0);
 
@@ -254,10 +255,15 @@ mod tests {
 
         // let m = BfvPlaintext::new(&params, &vec![2]);
         // let rgsw_ct = RgswCt::encrypt(&sk, &m);
-        let mut m = &Plaintext::new(&params, &vec![2], 0);
+        let mut m = &Plaintext::new(&params, &vec![2], 0, Encoding::Poly);
         let rgsw_ct = RgswCt::encrypt(&sk, m);
 
-        let ksk1 = Ksk::new_with_pt(&sk, &Plaintext::new(&params, &vec![2], 0), 0, 0);
+        let ksk1 = Ksk::new_with_pt(
+            &sk,
+            &Plaintext::new(&params, &vec![2], 0, Encoding::Poly),
+            0,
+            0,
+        );
 
         // construct ksk2 from ksk1 using rgsw
         let ksk2 = izip!(ksk1.c0.iter(), ksk1.c1.iter()).map(|(c0, c1)| {
@@ -303,7 +309,7 @@ mod tests {
             let v1 = Modulus::new(params.plaintext_modulus_u64).random_vec(params.degree, &mut rng);
             let v2 = Modulus::new(params.plaintext_modulus_u64).random_vec(params.degree, &mut rng);
 
-            let bfv_ct = sk.encrypt(&Plaintext::new(&params, &v1, 0));
+            let bfv_ct = sk.encrypt(&Plaintext::new(&params, &v1, 0, Encoding::Poly));
             let mut m2_poly = Poly::try_from_vec_u64(&params.q_ctxs[0], &v2);
             m2_poly.change_representation(Representation::Ntt);
             let rgsw_ct = RgswCt::encrypt_poly(&sk, &m2_poly);

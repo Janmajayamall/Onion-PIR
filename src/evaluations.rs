@@ -1,11 +1,12 @@
 use crate::{
-    bfv::{BfvCipherText, BfvParameters, GaliosKey, Plaintext, SecretKey},
+    bfv::{BfvCipherText, BfvParameters, Encoding, GaliosKey, Plaintext, SecretKey},
     ksk::Ksk,
     modulus::Modulus,
     rgsw::RgswCt,
     rq::{Poly, Representation, RqContext, Substitution},
     utils::ilog2,
 };
+
 use itertools::{enumerate, izip, Itertools};
 use ndarray::Array2;
 use num_bigint::BigUint;
@@ -389,6 +390,7 @@ mod tests {
             &params,
             &Modulus::new(params.plaintext_modulus_u64).random_vec(degree, &mut rng),
             0,
+            Encoding::Poly,
         ));
 
         let product = RgswCt::external_product(&rgsw, &ct1);
@@ -430,7 +432,7 @@ mod tests {
         // Pre-processing
         let db: Vec<Plaintext> = (0..16)
             .into_iter()
-            .map(|i| Plaintext::new(&params, &vec![i, i, i, i], 0))
+            .map(|i| Plaintext::new(&params, &vec![i, i, i, i], 0, Encoding::Poly))
             .collect();
 
         // Client side
@@ -439,7 +441,7 @@ mod tests {
         let client = Client::new(4, 2);
         let query_encoded = client.encode(query, db.len(), &params, &sk);
         dbg!(&query_encoded);
-        let query_first_dim = Plaintext::new(&params, &query_encoded, 0);
+        let query_first_dim = Plaintext::new(&params, &query_encoded, 0, Encoding::Poly);
         let query_first_dim = sk.encrypt(&query_first_dim);
         let mut query_cts = vec![query_first_dim];
         params.q_ctxs[0].rns.garner.iter().for_each(|gi| {
@@ -476,14 +478,14 @@ mod tests {
 
         let sk = SecretKey::generate(&params);
 
-        let query_dims = [123usize, 2, 3];
+        let query_dims = [3usize, 0, 0];
         let client = Client::default();
-        let query = client.encode(query_dims.to_vec(), 2048, &params, &sk);
+        let query = client.encode(query_dims.to_vec(), 64, &params, &sk);
         dbg!(&query);
         let sk = SecretKey::generate(&params);
         let evaluation = Evaluation::build(&sk, &params);
 
-        let pt = Plaintext::new(&params, &query, 0);
+        let pt = Plaintext::new(&params, &query, 0, Encoding::Poly);
         let ct = sk.encrypt(&pt);
 
         let cts = evaluation.unpack(ct);
@@ -492,8 +494,8 @@ mod tests {
             let p = sk.decrypt(c);
             query_r.push(p.values[0]);
         });
-        dbg!(&query);
-        dbg!(&query_r[..query.len()]);
+        // dbg!(&query);
+        // dbg!(&query_r[..query.len()]);
     }
 
     #[test]
@@ -562,7 +564,7 @@ mod tests {
 
         let binary_dist = Uniform::from(0..100);
         let values = rng.sample_iter(binary_dist).take(degree).collect_vec();
-        let ct = sk.encrypt(&Plaintext::new(&params, &values, 0));
+        let ct = sk.encrypt(&Plaintext::new(&params, &values, 0, Encoding::Poly));
 
         let unpacked_cts = evaluation.unpack(ct);
 

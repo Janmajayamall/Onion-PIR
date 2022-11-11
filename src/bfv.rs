@@ -1,4 +1,5 @@
 use crate::ksk::Ksk;
+use crate::ntt::NttOperator;
 use crate::rns::ScalingFactor;
 use crate::rq::{BitDecomposition, Poly, Representation, RqContext, RqScaler, Substitution};
 use crate::utils::div_ceil;
@@ -29,13 +30,15 @@ pub struct BfvParameters {
 
     pub ciphertext_moduli: Vec<u64>,
 
+    pub pt_ntt: Option<NttOperator>,
+
     pub q_ctxs: Vec<Arc<RqContext>>,
     pub e_ctxs: Vec<Arc<RqContext>>,
     pub mul_params: Vec<MultiplicationParameters>,
     pub delta_ts: Vec<Poly>,
     pub q_mod_ts: Vec<u64>,
     pub scalars: Vec<RqScaler>,
-
+    pub matrix_reps_index_map: Vec<usize>,
     pub variance: usize,
 }
 
@@ -135,6 +138,28 @@ impl BfvParameters {
             mul_params.push(mul_i);
         }
 
+        // We use the same code as SEAL
+        // https://github.com/microsoft/SEAL/blob/82b07db635132e297282649e2ab5908999089ad2/native/src/seal/batchencoder.cpp
+        let row_size = degree >> 1;
+        let m = degree << 1;
+        let gen = 3;
+        let mut pos = 1;
+        let mut matrix_reps_index_map = vec![0usize; degree];
+        for i in 0..row_size {
+            let index1 = (pos - 1) >> 1;
+            let index2 = (m - pos - 1) >> 1;
+            matrix_reps_index_map[i] = index1.reverse_bits() >> (degree.leading_zeros() + 1);
+            matrix_reps_index_map[row_size | i] =
+                index2.reverse_bits() >> (degree.leading_zeros() + 1);
+            pos *= gen;
+            pos &= m - 1;
+        }
+
+        let pt_ntt = Some(NttOperator::new(
+            &Modulus::new(plaintext_modulus_u64),
+            degree,
+        ));
+
         Self {
             degree,
             plaintext_modulus_u64,
@@ -148,8 +173,9 @@ impl BfvParameters {
             scalars,
             delta_ts: t_inv_polys,
             mul_params,
-
+            matrix_reps_index_map,
             variance,
+            pt_ntt,
         }
     }
 
@@ -349,6 +375,7 @@ impl SecretKey {
             params: self.params.clone(),
             values: m.into_boxed_slice(),
             level: ct.level,
+            encoding: Encoding::None,
         }
     }
 
@@ -536,20 +563,70 @@ impl Mul<&BigUint> for &BfvCipherText {
 }
 
 #[derive(Debug, Clone)]
+pub enum Encoding {
+    Poly,
+    SIMD,
+    None,
+}
+
+#[derive(Debug, Clone)]
 pub struct Plaintext {
     pub params: Arc<BfvParameters>,
-    pub values: Box<[u64]>,
     pub level: usize,
+    pub encoding: Encoding,
+    pub values: Box<[u64]>,
 }
 
 impl Plaintext {
-    pub fn new(params: &Arc<BfvParameters>, values: &Vec<u64>, level: usize) -> Self {
-        assert!(values.len() <= params.degree);
+    pub fn new(
+        params: &Arc<BfvParameters>,
+        values: &Vec<u64>,
+        level: usize,
+        encoding: Encoding,
+    ) -> Self {
+        // encode the values
+        let mut encoded_vals = vec![0u64; params.degree];
+        match encoding {
+            Encoding::Poly => encoded_vals.as_mut_slice()[..values.len()].copy_from_slice(values),
+            Encoding::SIMD => {
+                for i in 0..params.degree {
+                    encoded_vals[params.matrix_reps_index_map[i]] = values[i];
+                }
+                params.pt_ntt.as_ref().unwrap().backward(&mut encoded_vals);
+            }
+            Encoding::None => {
+                assert!(false);
+            }
+        }
         Self {
             params: params.clone(),
-            values: values.clone().into_boxed_slice(),
+            values: encoded_vals.into_boxed_slice(),
             level,
+            encoding,
         }
+    }
+
+    pub fn decode(&self) -> Vec<u64> {
+        let mut vals = vec![0u64; self.params.degree];
+        match self.encoding {
+            Encoding::Poly => vals.copy_from_slice(&self.values),
+            Encoding::SIMD => {
+                let mut values = self.values.clone();
+                self.params.pt_ntt.as_ref().unwrap().forward(&mut values);
+
+                for i in 0..self.params.degree {
+                    vals[i] = values[self.params.matrix_reps_index_map[i]];
+                }
+            }
+            Encoding::None => {
+                assert!(false);
+            }
+        }
+        vals
+    }
+
+    pub fn set_encoding(&mut self, to: Encoding) {
+        self.encoding = to
     }
 
     pub fn to_poly(&self) -> Poly {
@@ -693,8 +770,6 @@ impl RelinearizationKey {
 
 #[cfg(test)]
 mod tests {
-    use sha2::digest::typenum::Mod;
-
     use super::*;
 
     #[test]
@@ -708,17 +783,22 @@ mod tests {
 
         for _ in 0..100 {
             let sk = SecretKey::generate(&params);
-            let pt = Plaintext {
-                params: params.clone(),
-                values: Modulus::new(params.plaintext_modulus_u64)
-                    .random_vec(params.degree, &mut rng)
-                    .into_boxed_slice(),
-                level: 0,
-            };
-            let ct = sk.encrypt(&pt);
-            let pt_after = sk.decrypt(&ct);
+            let vals =
+                Modulus::new(params.plaintext_modulus_u64).random_vec(params.degree, &mut rng);
 
-            assert_eq!(pt.values, pt_after.values);
+            // poly
+            let pt = Plaintext::new(&params, &vals, 0, Encoding::Poly);
+            let ct = sk.encrypt(&pt);
+            let mut pt_after = sk.decrypt(&ct);
+            pt_after.set_encoding(Encoding::Poly);
+            assert_eq!(vals, pt_after.decode());
+
+            // SIMD
+            let pt = Plaintext::new(&params, &vals, 0, Encoding::SIMD);
+            let ct = sk.encrypt(&pt);
+            let mut pt_after = sk.decrypt(&ct);
+            pt_after.set_encoding(Encoding::SIMD);
+            assert_eq!(vals, pt_after.decode());
         }
     }
 
@@ -736,8 +816,8 @@ mod tests {
         let p1 = vec![100];
         let p2 = vec![200];
 
-        let ct1 = sk.encrypt(&Plaintext::new(&params, &p1, 0));
-        let ct2 = sk.encrypt(&Plaintext::new(&params, &p2, 0));
+        let ct1 = sk.encrypt(&Plaintext::new(&params, &p1, 0, Encoding::Poly));
+        let ct2 = sk.encrypt(&Plaintext::new(&params, &p2, 0, Encoding::Poly));
 
         let rlk = RelinearizationKey::new(&sk, 0);
 
@@ -764,7 +844,7 @@ mod tests {
             let gk = GaliosKey::new(&sk, &subs, 0);
 
             let v = Modulus::new(params.plaintext_modulus_u64).random_vec(params.degree, &mut rng);
-            let pt = Plaintext::new(&params, &v, 0);
+            let pt = Plaintext::new(&params, &v, 0, Encoding::Poly);
             let ct = sk.encrypt(&pt);
 
             let ct2 = gk.relinearize(&ct);
@@ -782,5 +862,31 @@ mod tests {
                 Vec::<u64>::from(&expected_vr.substitute(&subs))
             );
         }
+    }
+
+    #[test]
+    fn simd_slot_rotations() {
+        let mut rng = thread_rng();
+        let params = Arc::new(BfvParameters::default(
+            6,
+            8,
+            BitDecomposition { base: 4, l: 8 },
+        ));
+
+        let sk = SecretKey::generate(&params);
+        let vals = Modulus::new(params.plaintext_modulus_u64).random_vec(params.degree, &mut rng);
+
+        // SIMD
+        let pt = Plaintext::new(&params, &vals, 0, Encoding::SIMD);
+        let ct = sk.encrypt(&pt);
+
+        // perform rotation
+        // exponent 9 corresponds to col rotation by 2
+        let galios_key = GaliosKey::new(&sk, &Substitution::new(9), 0);
+        let r_ct = galios_key.relinearize(&ct);
+
+        let mut r_pt = sk.decrypt(&r_ct);
+        r_pt.set_encoding(Encoding::SIMD);
+        dbg!(vals, r_pt.decode());
     }
 }
