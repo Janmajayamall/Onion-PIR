@@ -266,8 +266,8 @@ mod tests {
     #[test]
     fn bijection() {
         let mut rng = thread_rng();
-        for n in [1024] {
-            for q in [4611686018326724609] {
+        for n in [8] {
+            for q in [1153] {
                 let moduli = Modulus::new(q);
                 let operator = NttOperator::new(&moduli, n);
 
@@ -275,7 +275,7 @@ mod tests {
                 let poly_clone = poly.clone();
                 operator.forward(&mut poly);
                 operator.backward(&mut poly);
-                assert_eq!(poly[0], poly_clone[0]);
+                assert_eq!(poly, poly_clone);
             }
         }
     }

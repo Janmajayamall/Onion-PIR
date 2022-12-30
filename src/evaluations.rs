@@ -237,7 +237,7 @@ impl Evaluation {
         let n = params.degree;
         for i in 0..ilog2(n) {
             let k = (n / 2usize.pow(i as u32)) + 1;
-            let gk_i = GaliosKey::new(sk, &Substitution::new(k), 0);
+            let gk_i = GaliosKey::new(sk, &Substitution::new(&params.q_ctxs[0], k), 0);
             gk_map.insert(k, gk_i);
         }
 
@@ -306,7 +306,7 @@ impl Evaluation {
             let mut xi = x.clone();
             // X^-(2^i) = -X^(N - 2^i), since X^-k = -(X^(N-k))
             let ex = n - 2usize.pow(i as u32);
-            xi = -&xi.substitute(&Substitution::new(ex));
+            xi = -&xi.substitute(&Substitution::new(&x.context, ex));
             polys.push(xi);
         }
         polys

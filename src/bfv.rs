@@ -140,17 +140,19 @@ impl BfvParameters {
 
         // We use the same code as SEAL
         // https://github.com/microsoft/SEAL/blob/82b07db635132e297282649e2ab5908999089ad2/native/src/seal/batchencoder.cpp
-        let row_size = degree >> 1;
-        let m = degree << 1;
         let gen = 3;
+        let row_size = degree >> 1;
         let mut pos = 1;
+        let m = degree << 1;
         let mut matrix_reps_index_map = vec![0usize; degree];
         for i in 0..row_size {
             let index1 = (pos - 1) >> 1;
-            let index2 = (m - pos - 1) >> 1;
+            let index2 = (m - pos - 1);
+
             matrix_reps_index_map[i] = index1.reverse_bits() >> (degree.leading_zeros() + 1);
             matrix_reps_index_map[row_size | i] =
                 index2.reverse_bits() >> (degree.leading_zeros() + 1);
+
             pos *= gen;
             pos &= m - 1;
         }
@@ -840,7 +842,7 @@ mod tests {
             ));
             let sk = SecretKey::generate(&params);
 
-            let subs = Substitution::new(3);
+            let subs = Substitution::new(&params.q_ctxs[0], 3);
             let gk = GaliosKey::new(&sk, &subs, 0);
 
             let v = Modulus::new(params.plaintext_modulus_u64).random_vec(params.degree, &mut rng);
@@ -882,7 +884,7 @@ mod tests {
 
         // perform rotation
         // exponent 9 corresponds to col rotation by 2
-        let galios_key = GaliosKey::new(&sk, &Substitution::new(9), 0);
+        let galios_key = GaliosKey::new(&sk, &Substitution::new(&params.q_ctxs[0], 15), 0);
         let r_ct = galios_key.relinearize(&ct);
 
         let mut r_pt = sk.decrypt(&r_ct);

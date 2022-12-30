@@ -5,7 +5,7 @@
 /// At each iteration (i.e. for current dimension) your dimension specific query
 /// index is equal to last query index `mod` current db dimension.
 /// You next query index is equal to last query index / current db dimension.
-/// 
+///
 /// Once you have obtained vector containing dimension specific query
 /// indexes. You need to expand them into a vec to 0s and 1s for bfv ciphertext
 /// encoding. For example, consider following as dimension specific query indexes
@@ -28,10 +28,9 @@
 /// and encode them into Bfv ciphertext. This means simply flat
 /// map all values as coefficients of the Bfv plaintext
 /// polynomial.
-
-
-
-
+/// 
+/// 
+/// 
 /// Let's consider the following bit vector
 /// [0, 1, 0, 1, 1, 0...]
 ///
@@ -88,3 +87,4 @@
 ///                     2^(i+1)*[x0]         2^(i+1)*[x4] * x^-(2^i)
 ///
 /// Ref - Algorithm 3 & 4 of https://eprint.iacr.org/2019/736.pdf
+fn g() {}

@@ -5,7 +5,7 @@ use itertools::{izip, Itertools};
 use ndarray::{Array2, Axis};
 use rand::{thread_rng, Rng};
 use rand_distr::Uniform;
-use sha2::digest::typenum::Mod;
+
 
 #[derive(Debug)]
 pub struct PvwParams {

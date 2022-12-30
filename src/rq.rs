@@ -19,6 +19,7 @@ use std::{
     io::Repeat,
     ops::{Add, AddAssign, Mul, MulAssign, Neg, Sub, SubAssign},
     sync::Arc,
+    task::Context,
 };
 
 /// Substitution exponent
@@ -29,12 +30,33 @@ use std::{
 #[derive(Clone, Debug)]
 pub struct Substitution {
     exponent: usize,
+    powers_bitrev: Vec<usize>,
 }
 
 impl Substitution {
-    pub fn new(exponent: usize) -> Self {
+    pub fn new(ctx: &Arc<RqContext>, exponent: usize) -> Self {
         // TODO: Why is this necessary ? https://github.com/tlepoint/fhe.rs/blob/8aafe4396d0b771e6aa25257c7daa61c109eb367/crates/fhe-math/src/rq/mod.rs#L54
-        Substitution { exponent }
+        //
+        // exponent cannot be even `% (2 * degree)`
+        let exponent = exponent % (2 * ctx.degree);
+        assert!(exponent & 1 == 1);
+
+        let mut power = (exponent - 1) >> 1;
+        let mask = ctx.degree - 1;
+
+        let powers_bitrev = (0..ctx.degree)
+            .into_iter()
+            .map(|_| {
+                let v = (power & mask).reverse_bits() >> (ctx.degree.leading_zeros() + 1);
+                power += exponent;
+                v
+            })
+            .collect_vec();
+
+        Substitution {
+            exponent,
+            powers_bitrev,
+        }
     }
 }
 
@@ -141,6 +163,7 @@ pub struct RqContext {
     pub next_ctx: Option<Arc<RqContext>>,
     pub q_last_inv_mod: Vec<u64>,
     pub q_last_inv_mod_shoup: Vec<u64>,
+    pub bitrev: Vec<usize>,
 }
 
 impl Debug for RqContext {
@@ -186,6 +209,11 @@ impl RqContext {
             q_last_inv_mod_shoup.push(qi.shoup(inv));
         }
 
+        let bitrev = (0..degree)
+            .into_iter()
+            .map(|i| i.reverse_bits() >> (degree.leading_zeros() + 1))
+            .collect_vec();
+
         Self {
             moduli_64,
             moduli,
@@ -196,6 +224,7 @@ impl RqContext {
             next_ctx,
             q_last_inv_mod,
             q_last_inv_mod_shoup,
+            bitrev,
         }
     }
 
@@ -341,11 +370,16 @@ impl Poly {
             _ => {
                 //FIXME: quick hack
                 let mut p = self.clone();
-                p.change_representation(Representation::PowerBasis);
-                p = p.substitute(a);
-                p.change_representation(self.representation.clone());
 
-                poly = p;
+                izip!(
+                    self.coefficients.outer_iter(),
+                    poly.coefficients.outer_iter_mut()
+                )
+                .for_each(|(c_row, mut p_row)| {
+                    for (j, k) in izip!(a.powers_bitrev.iter(), self.context.bitrev.iter()) {
+                        p_row[*k] = c_row[*j];
+                    }
+                })
             }
         }
         poly
@@ -685,8 +719,8 @@ mod tests {
         let q = p.clone();
         p.change_representation(Representation::Ntt);
 
-        let mut p3 = p.substitute(&Substitution { exponent: 3 });
-        p3 = p3.substitute(&Substitution { exponent: 11 });
+        let mut p3 = p.substitute(&Substitution::new(&ctx, 3));
+        p3 = p3.substitute(&Substitution::new(&ctx, 11));
         p3.change_representation(Representation::PowerBasis);
         dbg!(p3);
         dbg!(q);
